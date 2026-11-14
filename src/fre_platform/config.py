@@ -111,6 +111,7 @@ class Settings:
     channels: tuple[Channel, ...] = field(default_factory=lambda: parse_channels(DEFAULT_CHANNELS))
     channel_cutoff_hz: float = 1200.0
     baseband_rate_hz: float = 4000.0
+    receiver_model: str = "Airspy HF+ Discovery"
     airspy_binary: str = "airspyhf_rx"
     airspy_info_binary: str = "airspyhf_info"
     airspy_serial: str | None = None

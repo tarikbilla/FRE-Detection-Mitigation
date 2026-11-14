@@ -32,9 +32,15 @@ log = logging.getLogger(__name__)
 REANCHOR_THRESHOLD_S = 0.5
 
 
-def read_device_info(binary: str = "airspyhf_info", timeout: float = 10.0) -> dict:
-    """Parse ``airspyhf_info`` output. Must be called while the device is idle."""
-    info: dict = {"model": "Airspy HF+", "receive_only": True}
+def read_device_info(binary: str = "airspyhf_info", timeout: float = 10.0,
+                     model: str = "Airspy HF+ Discovery") -> dict:
+    """Parse ``airspyhf_info`` output. Must be called while the device is idle.
+
+    The whole Airspy HF+ family (HF+, HF+ Dual Port, HF+ Discovery) uses the
+    same libairspyhf interface; ``model`` records which one is attached.
+    """
+    info: dict = {"model": model, "family": "Airspy HF+", "driver": "libairspyhf/airspyhf_rx",
+                  "receive_only": True}
     exe = shutil.which(binary)
     if not exe:
         info["error"] = f"{binary} not found"
@@ -82,7 +88,7 @@ class AirspyHFSource(IQSource):
     # ------------------------------------------------------------------
     def device_info(self) -> dict:
         if self._info is None:
-            self._info = read_device_info(self.cfg.airspy_info_binary)
+            self._info = read_device_info(self.cfg.airspy_info_binary, model=self.cfg.receiver_model)
         return dict(self._info)
 
     def command(self) -> list[str]:
