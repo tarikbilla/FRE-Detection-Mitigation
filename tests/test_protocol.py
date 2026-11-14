@@ -89,6 +89,24 @@ def test_authenticity_flags_spoofed_time():
     assert a["assessment"] == "implausible" and a["clock_offset_s"] == 10800.0 and a["time_plausible"] is False
 
 
+def test_presentation_format_matches_paper_fields():
+    from fre_platform.protocol.telegram import format_presentation
+    # the detailed time example decoded in the talk (slide 12)
+    tgs = decode_bytes(_b("68 0a 0a 68 b7 00 00 00 80 30 0b de 0b 18 73 16"))
+    text = format_presentation(tgs[0])
+    assert "68 0a 0a 68 b7" in text                      # grouped hex like the paper
+    assert "EVU=0000" in text and "checksum=OK" in text
+    assert "2024-11-30 11:48" in text and "Sat" in text   # decoded time matches the paper
+    assert "Minute 48" in text and "Hour (Low 7 bits) 11" in text and "Day (Low 5 bits) 30" in text
+
+
+@pytest.mark.parametrize("hexstr", EXAMPLES + [t[0] for t in TIME_EXAMPLES])
+def test_all_paper_examples_render(hexstr):
+    from fre_platform.protocol.telegram import format_presentation
+    tgs = decode_bytes(_b(hexstr))
+    assert tgs and format_presentation(tgs[0]).startswith("Telegram")
+
+
 def test_authenticity_integrity_fail_on_bad_checksum():
     from fre_platform.protocol.telegram import assess_authenticity
     now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)

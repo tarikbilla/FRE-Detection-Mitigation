@@ -112,6 +112,38 @@ def decode_bytes(data: bytes, require_checksum: bool = True) -> list[Telegram]:
     return [classify(f) for f in parse_frames(data, require_checksum=require_checksum)]
 
 
+def grouped_hex(data: bytes) -> str:
+    """Space-separated hex bytes, as the telegrams are written in the 38C3 talk."""
+    return " ".join(f"{b:02x}" for b in data)
+
+
+def format_presentation(tg: Telegram) -> str:
+    """Render a telegram the way the BlinkenCity talk shows them (frame + fields)."""
+    raw = bytes.fromhex(tg.raw_hex)
+    user = raw[4:4 + tg.length]
+    payload = user[3:]
+    lines = [
+        f"Telegram  [{tg.kind}/{tg.protocol}]  checksum={'OK' if tg.checksum_ok else 'FAIL'}",
+        f"  raw     : {grouped_hex(raw)}",
+        f"  frame   : 68 | len {tg.length:02x} {tg.length:02x} | 68 | "
+        f"C={tg.control:02x} | EVU={tg.evu_address:04x} | PD={grouped_hex(payload)} | "
+        f"CS={raw[-2]:02x} | 16",
+    ]
+    if tg.time is not None:
+        t = tg.time
+        lines += [
+            "  decoded time (UTC):",
+            f"     {t.year:04d}-{t.month:02d}-{t.day:02d} {t.hour:02d}:{t.minute:02d}:{t.second:02d}  ({t.weekday})",
+            f"     Year {t.year % 100:<3d} Month {t.month:<3d} Day (Low 5 bits) {t.day:<3d} Weekday (High 3 bits) {t.weekday}",
+            f"     Hour (Low 7 bits) {t.hour:<3d} Minute {t.minute:<3d} Second (High 6 bits) {t.second:<3d} "
+            f"Daylight saving (High bit) {'Yes' if t.dst else 'No'}"
+            + ("" if not t.seconds_provisional else "   [second field provisional]"),
+        ]
+    elif tg.kind == "command":
+        lines.append("  command telegram: header only (observed, not decoded or acted upon)")
+    return "\n".join(lines)
+
+
 def assess_authenticity(telegram: dict, received_ts: datetime, signal: dict | None = None,
                         ntp_synced: bool | None = None, tolerance_s: float = 5.0) -> dict:
     """Deterministic authenticity signals for a decoded telegram (no ML).

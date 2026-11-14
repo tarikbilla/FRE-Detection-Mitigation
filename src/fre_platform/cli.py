@@ -110,6 +110,57 @@ def _printer():
     return show
 
 
+_BAR = "█"
+
+
+def _snr_bar(snr, width=16, lo=-20.0, hi=40.0):
+    if not isinstance(snr, (int, float)):
+        return " " * width
+    frac = max(0.0, min(1.0, (snr - lo) / (hi - lo)))
+    return (_BAR * round(frac * width)).ljust(width)
+
+
+def format_dashboard(s: dict, color: bool = True) -> str:
+    """A refreshing, professional reception panel (one screen, redrawn each block)."""
+    C = (lambda code, t: f"\033[{code}m{t}\033[0m") if color else (lambda code, t: t)
+    up = s.get("upload")
+    tot = s.get("telegram_totals") or {}
+    rows = [
+        C("1;36", "  FRE Radio Ripple-Control Receiver  —  live reception"),
+        C("2", "  " + "─" * 74),
+        f"  time {s['ts'][11:23]}   block #{s['seq']}   "
+        + (C("1;31", "⚠ INVALID: " + "; ".join(s['reasons'])) if not s['valid'] else C("2", "capture OK")),
+        f"  band floor {_num(s['band_floor_db'], '7.1f')} dBFS/Hz   power {_num(s['band_power_dbfs'], '6.1f')} dBFS"
+        + ("   " + C("1;33", "band: " + ",".join(s['band_rules'])) if s['band_rules'] else ""),
+        "",
+        C("1", "  station      freq       SNR                     recv     FSK   last telegram"),
+    ]
+    for c in s["channels"]:
+        recv = c["signal_state"] == "present"
+        dot = C("1;32", "● RECV ") if recv else C("2", "○ ---- ")
+        bar = C("32" if recv else "2", _snr_bar(c["snr_db"]))
+        last = ""
+        for tg in c.get("telegrams", []):
+            a = tg.get("assessment") or ""
+            col = {"authentic_candidate": "1;32", "implausible": "1;31", "integrity_fail": "1;31"}.get(a, "33")
+            last = C(col, f"{tg['kind']}:{a}")
+        rows.append(f"  {c['name']:<6} {c['freq_hz']/1e3:8.1f}k  [{bar}] {_num(c['snr_db'],'6.1f')}dB  "
+                    f"{dot} {_num(c['fsk_activity'],'4.2f')}  {last}")
+    rows += [
+        "",
+        f"  telegrams: {C('1', str(tot.get('total', 0)))} total   {tot.get('time', 0)} time   "
+        + (C("1;31", f"{tot.get('suspect', 0)} SUSPECT") if tot.get("suspect") else C("2", "0 suspect")),
+        f"  buffer {s['buffer_rows']} rows   " + (
+            C("2", "atlas: not configured") if up is None else
+            (C("1;32", "atlas: online") if up["online"] else C("1;31", "atlas: OFFLINE (buffering)"))
+            + f"  {up['uploaded']} uploaded"
+            + (f"  {up['storage_mb']:.0f} MB" if up.get("storage_mb") is not None else "")
+            + (C("1;33", "  QUOTA: alerts only") if up.get("restricted") else "")),
+        C("2", "  Ctrl+C to stop"),
+    ]
+    return "\n".join(rows)
+
+
 def _install_signal_handlers(stop: threading.Event) -> None:
     def handler(signum, _frame):
         log.info("signal received, stopping", extra={"signal": signum})
@@ -144,25 +195,57 @@ def cmd_watch(args) -> int:
     import time
     cfg = _settings(args)
     path = Path(cfg.data_dir) / "live.json"
-    show = _printer()
+    color = sys.stdout.isatty()
+    # Default to the refreshing dashboard on a terminal; --plain scrolls lines.
+    dashboard = color and not args.plain
     last_seq, last_change = None, time.monotonic()
-    print(f"watching {path} (Ctrl+C to stop)", flush=True)
+    stale = max(10.0, 5 * cfg.block_seconds)
+    if not dashboard:
+        print(f"watching {path} (Ctrl+C to stop)", flush=True)
     try:
         while True:
             try:
                 s = json.loads(path.read_text())
             except (OSError, ValueError):
                 s = None
-            if s and (s["seq"], s["ts"]) != last_seq:
+            fresh = bool(s) and (s["seq"], s["ts"]) != last_seq
+            if fresh:
                 last_seq, last_change = (s["seq"], s["ts"]), time.monotonic()
-                show(s)
-            elif time.monotonic() - last_change > max(10.0, 5 * cfg.block_seconds):
-                print(f"... no new data for {time.monotonic() - last_change:.0f} s "
-                      f"(is the collector running? systemctl status fre-collector)", flush=True)
+            age = time.monotonic() - last_change
+            if dashboard:
+                panel = format_dashboard(s, color) if s else "  waiting for collector..."
+                if age > stale:
+                    panel += "\n  " + (f"\033[1;31m⚠ no new data for {age:.0f}s — is fre-collector running?\033[0m")
+                sys.stdout.write("\033[H\033[2J" + panel + "\n")  # home + clear, redraw
+                sys.stdout.flush()
+            elif fresh:
+                print(format_live(s, color), flush=True)
+            elif age > stale:
+                print(f"... no new data for {age:.0f} s (is the collector running?)", flush=True)
                 last_change = time.monotonic()
             time.sleep(args.interval)
     except KeyboardInterrupt:
         return 0
+
+
+def cmd_decode(args) -> int:
+    """Decode telegram hex (receive-only) and show it in the paper's format."""
+    from .protocol.telegram import decode_bytes, format_presentation
+    hexstr = "".join(args.hex).replace(" ", "").replace("0x", "")
+    try:
+        data = bytes.fromhex(hexstr)
+    except ValueError:
+        print("invalid hex", file=sys.stderr)
+        return 2
+    tgs = decode_bytes(data, require_checksum=not args.allow_bad_checksum)
+    if not tgs:
+        print("no valid telegram frame found", file=sys.stderr)
+        return 1
+    for tg in tgs:
+        print(format_presentation(tg))
+        if args.json:
+            _print(tg.to_dict())
+    return 0
 
 
 def cmd_simulate(args) -> int:
@@ -326,9 +409,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--live", action="store_true", help="print every received block to the console")
     s.set_defaults(func=cmd_collect)
 
-    s = sub.add_parser("watch", help="show live data from the running collector/service")
-    s.add_argument("--interval", type=float, default=0.3, help="poll interval in seconds")
+    s = sub.add_parser("watch", help="live reception dashboard for the running collector/service")
+    s.add_argument("--interval", type=float, default=0.3, help="refresh interval in seconds")
+    s.add_argument("--plain", action="store_true", help="scrolling lines instead of the refreshing panel")
     s.set_defaults(func=cmd_watch)
+
+    s = sub.add_parser("decode", help="decode telegram hex (receive-only) in the reference format")
+    s.add_argument("hex", nargs="+", help="telegram bytes in hex, e.g. 68 0a 0a 68 ...")
+    s.add_argument("--allow-bad-checksum", action="store_true")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_decode)
 
     s = sub.add_parser("simulate", help="run a synthetic scenario through the full pipeline")
     s.add_argument("--scenario", default="mixed")
