@@ -39,17 +39,17 @@ def test_atlas_idempotent_insert_and_read(atlas_store):
     atlas_store.ensure_schema()
     now = datetime.now(timezone.utc)
     rid = f"pytest|{uuid.uuid4().hex}"
-    doc = {"_id": rid, "schema_version": 1, "dataset_version": "test", "station_id": "pytest", "ts": now,
-           "channel": {"name": "T", "freq_hz": 1.0}, "features": {"snr_db": 1.0},
-           "detection": {"verdict": "normal"}, "label": None}
+    doc = {"_id": rid, "schema_version": 1, "dataset_version": "test", "experiment_id": "pytest",
+           "station_id": "pytest", "ts": now, "channel": {"name": "T", "freq_hz": 1.0},
+           "features": {"snr_db": 1.0}, "signal_state": "present", "label": None}
     for _ in range(2):
-        assert atlas_store.upload("measurements", [(rid, "insert", doc)]).ok == [rid]
-    assert atlas_store.db.measurements.count_documents({"_id": rid}) == 1
-    back = atlas_store.db.measurements.find_one({"_id": rid})
+        assert atlas_store.upload("observations", [(rid, "insert", doc)]).ok == [rid]
+    assert atlas_store.db.observations.count_documents({"_id": rid}) == 1
+    back = atlas_store.db.observations.find_one({"_id": rid})
     assert back["features"]["snr_db"] == 1.0 and back["ts"].tzinfo is not None
 
 
 def test_atlas_schema_validation_rejects_bad_docs(atlas_store):
     atlas_store.ensure_schema()
-    res = atlas_store.upload("measurements", [("bad", "insert", {"_id": "bad", "nonsense": True})])
+    res = atlas_store.upload("observations", [("bad", "insert", {"_id": "bad", "nonsense": True})])
     assert res.rejected and res.rejected[0][0] == "bad"

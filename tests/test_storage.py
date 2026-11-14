@@ -15,25 +15,26 @@ def mdoc(i):
 
 def test_ensure_schema_creates_collections_and_indexes(mongomock_store):
     report = mongomock_store.ensure_schema()
+    assert set(COLLECTIONS) == {"sessions", "observations", "spectra", "telegrams"}
     assert set(COLLECTIONS) <= set(mongomock_store.db.list_collection_names())
-    idx = mongomock_store.db.measurements.index_information()
-    assert "station_channel_ts" in idx and "dataset_label" in idx
-    assert "ttl_created" in mongomock_store.db.healthchecks.index_information()
-    assert report["indexes"]["detections"]
+    idx = mongomock_store.db.observations.index_information()
+    assert "dataset_channel_ts" in idx and "signal_state_ts" in idx
+    assert "kind_ts" in mongomock_store.db.telegrams.index_information()
+    assert report["indexes"]["telegrams"]
     mongomock_store.ensure_schema()  # idempotent
 
 
 def test_upload_is_idempotent(mongomock_store):
     rows = [(f"m{i}", "insert", mdoc(i)) for i in range(5)]
-    assert len(mongomock_store.upload("measurements", rows).ok) == 5
-    assert len(mongomock_store.upload("measurements", rows).ok) == 5  # re-send after lost ack
-    assert mongomock_store.db.measurements.count_documents({}) == 5
+    assert len(mongomock_store.upload("observations", rows).ok) == 5
+    assert len(mongomock_store.upload("observations", rows).ok) == 5  # re-send after lost ack
+    assert mongomock_store.db.observations.count_documents({}) == 5
 
 
 def test_upsert_mode_replaces(mongomock_store):
-    mongomock_store.upload("devices", [("d", "upsert", {"_id": "d", "x": 1})])
-    mongomock_store.upload("devices", [("d", "upsert", {"_id": "d", "x": 2})])
-    assert mongomock_store.db.devices.find_one({"_id": "d"})["x"] == 2
+    mongomock_store.upload("sessions", [("d", "upsert", {"_id": "d", "x": 1})])
+    mongomock_store.upload("sessions", [("d", "upsert", {"_id": "d", "x": 2})])
+    assert mongomock_store.db.sessions.find_one({"_id": "d"})["x"] == 2
 
 
 def test_healthcheck_roundtrip(mongomock_store):
@@ -114,26 +115,26 @@ def test_free_tier_quota_guard(cfg, tmp_path, mongomock_store):
             return self.used
 
     buf = LocalBuffer(tmp_path / "b.sqlite3")
-    buf.put_many([("measurements", mdoc(i), "insert") for i in range(5)])
-    buf.put("detections", {"_id": "d1", "verdict": "anomalous"})
+    buf.put_many([("spectra", mdoc(i), "insert") for i in range(5)])
+    buf.put("telegrams", {"_id": "t1", "kind": "time"})
     store = NearlyFullStore(mongomock_store, 0)
     up = Uploader(buf, lambda: store, cfg)
     assert up.flush_once()
     assert up.stats["quota_restricted"] and up.stats["storage_used_mb"] == 500.0
-    assert mongomock_store.db.detections.count_documents({}) == 1      # alerts still uploaded
-    assert mongomock_store.db.measurements.count_documents({}) == 0    # bulk data kept locally
-    assert buf.count_by_collection() == {"measurements": 5}
+    assert mongomock_store.db.telegrams.count_documents({}) == 1    # telegrams always uploaded
+    assert mongomock_store.db.spectra.count_documents({}) == 0      # bulk data kept locally
+    assert buf.count_by_collection() == {"spectra": 5}
 
     store.used = 100.0  # space freed (e.g. old data archived/deleted)
     up._last_quota_check = float("-inf")
     assert up.flush_once() and not up.stats["quota_restricted"]
-    assert mongomock_store.db.measurements.count_documents({}) == 5 and buf.count() == 0
+    assert mongomock_store.db.spectra.count_documents({}) == 5 and buf.count() == 0
 
 
 def test_fetch_batch_exclude(tmp_path):
     buf = LocalBuffer(tmp_path / "b.sqlite3")
-    buf.put_many([("measurements", mdoc(1), "insert"), ("detections", {"_id": "d"}, "insert")])
-    assert [r.collection for r in buf.fetch_batch(10, exclude=("measurements", "raw_observations"))] == ["detections"]
+    buf.put_many([("spectra", mdoc(1), "insert"), ("telegrams", {"_id": "d"}, "insert")])
+    assert [r.collection for r in buf.fetch_batch(10, exclude=("spectra", "observations"))] == ["telegrams"]
 
 
 def test_background_thread_uploads(cfg, tmp_path, mongomock_store):

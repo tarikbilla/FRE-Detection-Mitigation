@@ -31,7 +31,8 @@ class SimulatedSource(IQSource):
 
     def __init__(self, cfg: Settings, scenario: str | None = None, seed: int | None = None,
                  realtime: bool = False, target_channel: str | None = None, max_blocks: int | None = None,
-                 anomaly_probability: float = 0.35):
+                 anomaly_probability: float = 0.35, emit_telegrams: bool = False,
+                 telegram_period_s: float = 10.0):
         scenario = scenario or cfg.sim_scenario
         if scenario not in SCENARIOS:
             raise ValueError(f"unknown scenario {scenario!r}; choose from {SCENARIOS}")
@@ -55,6 +56,31 @@ class SimulatedSource(IQSource):
         self._seq = 0
         self._t0_ns = time.time_ns()
         self._next_deadline = time.monotonic()
+        # Real DIN 19244 time-telegram injection (receive-chain verification).
+        self.emit_telegrams = emit_telegrams
+        self.telegram_period_s = telegram_period_s
+        self._tele_dev: dict[str, np.ndarray] = {c.name: np.zeros(0) for c in self.channels}
+
+    def _telegram_dev(self, n: int) -> np.ndarray:
+        """Next ``n`` samples of FSK frequency deviation carrying time telegrams.
+
+        Idles at the mark tone (-shift) and inserts one broadcast time telegram
+        every ``telegram_period_s``; shared across EFR channels each block.
+        """
+        from datetime import datetime, timezone
+
+        from ..protocol.synth import build_time_frame, bytes_to_8e1_bits
+        buf = self._shared_tele if hasattr(self, "_shared_tele") else np.zeros(0)
+        while len(buf) < n:
+            ts = datetime.fromtimestamp((self._t0_ns + self._sample_index * 1e9 / self.fs) / 1e9, timezone.utc)
+            bits = bytes_to_8e1_bits(build_time_frame(ts.replace(microsecond=0)))
+            sps = int(round(self.fs / BAUD))
+            tele = np.array([(-FSK_SHIFT_HZ if b == 1 else FSK_SHIFT_HZ) for b in bits]).repeat(sps)
+            gap = max(0, int(self.telegram_period_s * self.fs) - len(tele))
+            idle = np.full(gap, -FSK_SHIFT_HZ)  # idle = mark
+            buf = np.concatenate([buf, tele, idle])
+        self._shared_tele = buf[n:]
+        return buf[:n]
 
     def set_scenario(self, scenario: str) -> None:
         """Switch scenario mid-stream (e.g. an attack starting after normal reception)."""
@@ -115,6 +141,7 @@ class SimulatedSource(IQSource):
         labels = self._labels_for_block()
         x = (rng.standard_normal(n) + 1j * rng.standard_normal(n)) * (self.noise_amp / np.sqrt(2))
         t_abs = (self._sample_index + np.arange(n)) / fs
+        tele_dev = self._telegram_dev(n) if self.emit_telegrams else None
 
         for ch in self.channels:
             label = labels[ch.name]
@@ -134,7 +161,10 @@ class SimulatedSource(IQSource):
                 x += self._tone(ch.name, base_off, env)
                 continue
             extra = 40.0 if label == "freq_offset" else 0.0
-            dev = self._fsk_freq(n, burst_prob=0.25, always=(label == "flood"))
+            if self.emit_telegrams and label == "normal":
+                dev = tele_dev
+            else:
+                dev = self._fsk_freq(n, burst_prob=0.25, always=(label == "flood"))
             x += self._tone(ch.name, base_off + extra + dev, amp)
 
             if label == "spoof":

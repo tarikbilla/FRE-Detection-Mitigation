@@ -38,7 +38,7 @@ class Uploader(threading.Thread):
         self._last_quota_check = float("-inf")
 
     # ------------------------------------------------------------------
-    BULK_COLLECTIONS = ("raw_observations", "measurements")
+    BULK_COLLECTIONS = ("spectra", "observations")
 
     def _check_quota(self, store: MongoStore) -> None:
         """Free-tier guard: near the Atlas quota, keep bulk data local and upload only

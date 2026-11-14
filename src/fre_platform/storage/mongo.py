@@ -17,58 +17,66 @@ from ..config import ConfigError, Settings, redact_text
 log = logging.getLogger(__name__)
 
 _INT = {"bsonType": ["int", "long"]}
+_NUM = {"bsonType": ["double", "int", "long"]}
 _DATE = {"bsonType": "date"}
 _STR = {"bsonType": "string"}
-_COMMON_REQ = ["schema_version", "dataset_version", "station_id", "ts"]
-_COMMON_PROPS = {"schema_version": _INT, "dataset_version": _STR, "station_id": _STR, "ts": _DATE,
-                 "ts_ns": _INT, "experiment_id": _STR, "device_id": _STR, "source": _STR}
+_BOOL = {"bsonType": "bool"}
+_CHANNEL = {"bsonType": "object", "required": ["name", "freq_hz"],
+            "properties": {"name": _STR, "freq_hz": _NUM}}
+# Fields shared by every time-series research record.
+_COMMON_REQ = ["schema_version", "dataset_version", "experiment_id", "station_id", "ts"]
+_COMMON_PROPS = {"schema_version": _INT, "dataset_version": _STR, "experiment_id": _STR, "station_id": _STR,
+                 "ts": _DATE, "ts_ns": _INT, "seq": _INT, "source": _STR}
 
+# Clean, professional research dataset: one metadata collection plus three
+# time-series collections (signal features, spectra, decoded telegrams). ML /
+# detection results are NOT stored here - they are added in a later phase.
 VALIDATORS: dict[str, dict] = {
-    "raw_observations": {"$jsonSchema": {
-        "bsonType": "object", "required": _COMMON_REQ + ["quality", "psd", "center_freq_hz", "sample_rate_hz"],
-        "properties": {**_COMMON_PROPS, "quality": {"bsonType": "object"}, "psd": {"bsonType": "object"},
-                       "center_freq_hz": {"bsonType": ["double", "int", "long"]}, "sample_rate_hz": _INT}}},
-    "measurements": {"$jsonSchema": {
-        "bsonType": "object", "required": _COMMON_REQ + ["channel", "features", "detection"],
-        "properties": {**_COMMON_PROPS, "channel": {"bsonType": "object", "required": ["name", "freq_hz"]},
-                       "features": {"bsonType": "object"}, "detection": {"bsonType": "object"},
-                       "label": {"bsonType": ["string", "null"]}}}},
-    "detections": {"$jsonSchema": {
-        "bsonType": "object", "required": _COMMON_REQ + ["channel", "verdict", "rule_hits"],
-        "properties": {**_COMMON_PROPS, "verdict": {"enum": ["normal", "suspicious", "anomalous"]},
-                       "rule_hits": {"bsonType": "array"}, "mitigations": {"bsonType": "array"}}}},
-    "devices": {"$jsonSchema": {"bsonType": "object", "required": ["schema_version", "station_id", "device_type"],
-                                "properties": {"schema_version": _INT, "station_id": _STR, "device_type": _STR}}},
-    "experiments": {"$jsonSchema": {"bsonType": "object", "required": ["schema_version", "station_id", "conditions"],
-                                    "properties": {"schema_version": _INT, "conditions": {"bsonType": "object"}}}},
-    "datasets": {"$jsonSchema": {"bsonType": "object", "required": ["schema_version", "feature_names"],
-                                 "properties": {"schema_version": _INT, "feature_names": {"bsonType": "array"}}}},
-    "models": {"$jsonSchema": {"bsonType": "object", "required": ["schema_version", "metadata"],
-                               "properties": {"schema_version": _INT, "metadata": {"bsonType": "object"}}}},
+    # One document per collection run / configuration (reproducibility metadata).
+    "sessions": {"$jsonSchema": {
+        "bsonType": "object", "required": ["schema_version", "dataset_version", "station_id", "device", "config"],
+        "properties": {"schema_version": _INT, "dataset_version": _STR, "station_id": _STR,
+                       "device": {"bsonType": "object"}, "config": {"bsonType": "object"},
+                       "feature_names": {"bsonType": "array"}}}},
+    # Per-channel signal measurements: the ML-ready feature time-series.
+    "observations": {"$jsonSchema": {
+        "bsonType": "object", "required": _COMMON_REQ + ["channel", "features", "signal_state"],
+        "properties": {**_COMMON_PROPS, "channel": _CHANNEL, "features": {"bsonType": "object"},
+                       "signal_state": {"enum": ["present", "lost", "absent"]},
+                       "quality": {"bsonType": "object"}}}},
+    # Periodic band spectrum + block quality (frequency-domain research data).
+    "spectra": {"$jsonSchema": {
+        "bsonType": "object", "required": _COMMON_REQ + ["center_freq_hz", "sample_rate_hz", "psd"],
+        "properties": {**_COMMON_PROPS, "center_freq_hz": _NUM, "sample_rate_hz": _INT,
+                       "psd": {"bsonType": "object"}, "band": {"bsonType": "object"},
+                       "quality": {"bsonType": "object"}}}},
+    # Decoded received FRE telegrams (the actual signal content).
+    "telegrams": {"$jsonSchema": {
+        "bsonType": "object", "required": _COMMON_REQ + ["channel", "kind", "checksum_ok", "raw_hex"],
+        "properties": {**_COMMON_PROPS, "channel": _CHANNEL, "kind": _STR, "protocol": _STR,
+                       "checksum_ok": _BOOL, "raw_hex": _STR, "evu_address": {"bsonType": ["string", "null"]},
+                       "time": {"bsonType": ["object", "null"]}}}},
 }
 
 INDEXES: dict[str, list[IndexModel]] = {
-    "raw_observations": [
+    "sessions": [IndexModel([("station_id", ASCENDING), ("started_at", DESCENDING)], name="station_started"),
+                 IndexModel([("dataset_version", ASCENDING)], name="dataset")],
+    "observations": [
+        IndexModel([("dataset_version", ASCENDING), ("channel.name", ASCENDING), ("ts", ASCENDING)], name="dataset_channel_ts"),
+        IndexModel([("experiment_id", ASCENDING), ("seq", ASCENDING)], name="experiment_seq"),
         IndexModel([("station_id", ASCENDING), ("ts", DESCENDING)], name="station_ts"),
-        IndexModel([("dataset_version", ASCENDING), ("ts", DESCENDING)], name="dataset_ts"),
+        IndexModel([("signal_state", ASCENDING), ("ts", DESCENDING)], name="signal_state_ts"),
     ],
-    "measurements": [
-        IndexModel([("station_id", ASCENDING), ("channel.name", ASCENDING), ("ts", DESCENDING)], name="station_channel_ts"),
-        IndexModel([("dataset_version", ASCENDING), ("label", ASCENDING)], name="dataset_label"),
-        IndexModel([("experiment_id", ASCENDING), ("ts", DESCENDING)], name="experiment_ts"),
-        IndexModel([("detection.verdict", ASCENDING), ("ts", DESCENDING)], name="verdict_ts"),
+    "spectra": [
+        IndexModel([("dataset_version", ASCENDING), ("ts", ASCENDING)], name="dataset_ts"),
+        IndexModel([("experiment_id", ASCENDING), ("seq", ASCENDING)], name="experiment_seq"),
     ],
-    "detections": [
-        IndexModel([("ts", DESCENDING)], name="ts"),
-        IndexModel([("station_id", ASCENDING), ("channel.name", ASCENDING), ("ts", DESCENDING)], name="station_channel_ts"),
-        IndexModel([("verdict", ASCENDING), ("ts", DESCENDING)], name="verdict_ts"),
-        IndexModel([("rule_hits.code", ASCENDING)], name="rule_code"),
+    "telegrams": [
+        IndexModel([("dataset_version", ASCENDING), ("ts", ASCENDING)], name="dataset_ts"),
+        IndexModel([("channel.name", ASCENDING), ("ts", DESCENDING)], name="channel_ts"),
+        IndexModel([("kind", ASCENDING), ("ts", DESCENDING)], name="kind_ts"),
+        IndexModel([("evu_address", ASCENDING)], name="evu_address"),
     ],
-    "devices": [IndexModel([("station_id", ASCENDING)], name="station")],
-    "experiments": [IndexModel([("station_id", ASCENDING), ("started_at", DESCENDING)], name="station_started")],
-    "datasets": [IndexModel([("created_at", DESCENDING)], name="created")],
-    "models": [IndexModel([("metadata.trained_at", DESCENDING)], name="trained_at")],
-    "healthchecks": [IndexModel([("created_at", ASCENDING)], name="ttl_created", expireAfterSeconds=86400)],
 }
 COLLECTIONS = tuple(INDEXES)
 
@@ -190,14 +198,22 @@ class MongoStore:
             return res
 
     def healthcheck_roundtrip(self, station_id: str) -> dict:
-        coll = self.db["healthchecks"]
+        """Insert/read/delete a document in a throwaway collection, then drop it.
+
+        Leaves no residue in the research dataset (no dedicated health collection).
+        """
+        name = f"_healthcheck_{uuid.uuid4().hex[:8]}"
+        coll = self.db[name]
         doc_id = f"{station_id}|{uuid.uuid4().hex}"
         now = datetime.now(timezone.utc)
         t = time.perf_counter()
-        coll.insert_one({"_id": doc_id, "station_id": station_id, "created_at": now, "schema_version": SCHEMA_VERSION})
-        back = coll.find_one({"_id": doc_id})
-        coll.delete_one({"_id": doc_id})
-        gone = coll.find_one({"_id": doc_id}) is None
+        try:
+            coll.insert_one({"_id": doc_id, "station_id": station_id, "created_at": now})
+            back = coll.find_one({"_id": doc_id})
+            coll.delete_one({"_id": doc_id})
+            gone = coll.find_one({"_id": doc_id}) is None
+        finally:
+            coll.drop()
         return {"insert_read_delete_ok": bool(back and back["station_id"] == station_id and gone),
                 "roundtrip_ms": round((time.perf_counter() - t) * 1000, 1)}
 

@@ -29,7 +29,9 @@ def test_classifier_quality(trained):
 
 
 def test_save_load_predict(trained, tmp_path):
+    import dataclasses
     cfg, _, models, _ = trained
+    cfg = dataclasses.replace(cfg, enable_detection=True)  # ML runs only when detection is enabled
     path = tmp_path / "m.joblib"
     models.save(path)
     loaded = FreModels.load(path)

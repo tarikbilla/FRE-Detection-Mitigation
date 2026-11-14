@@ -65,9 +65,12 @@ def evaluate_strategies(events: pd.DataFrame, rate_limit: int = 3, window_blocks
 
 def run_mitigation_experiment(cfg: Settings, blocks: int = 200, seed: int = 11, models=None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run the simulated 'mixed' scenario through the full detection stack."""
+    import dataclasses
+
     from ..pipeline import BlockAnalyzer
     from ..sources.simulated import SimulatedSource
 
+    cfg = dataclasses.replace(cfg, enable_detection=True)  # strategy comparison needs detector verdicts
     src = SimulatedSource(cfg, scenario="mixed", seed=seed, anomaly_probability=0.35)
     analyzer = BlockAnalyzer(cfg, models=models)
     rows = []

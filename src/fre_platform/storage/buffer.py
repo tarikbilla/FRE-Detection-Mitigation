@@ -21,9 +21,9 @@ from bson.json_util import JSONMode, JSONOptions
 log = logging.getLogger(__name__)
 
 JSON_OPTS = JSONOptions(json_mode=JSONMode.RELAXED, tz_aware=True)
-# When the buffer is full, drop the least valuable data first. Detections,
-# devices, experiments, datasets and models are never dropped.
-PRUNE_ORDER = ("raw_observations", "measurements")
+# When the buffer is full, drop the bulkiest / most reproducible data first.
+# Telegrams (decoded signal) and sessions (metadata) are never dropped.
+PRUNE_ORDER = ("spectra", "observations")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS outbox (

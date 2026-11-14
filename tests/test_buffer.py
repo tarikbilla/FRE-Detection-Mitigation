@@ -48,12 +48,12 @@ def test_delete_and_dead_letter(tmp_path):
     assert b.count() == 1 and b.dead_letter_count() == 1
 
 
-def test_prune_drops_raw_first_never_detections(tmp_path):
+def test_prune_drops_spectra_first_never_telegrams(tmp_path):
     b = LocalBuffer(tmp_path / "b.sqlite3", max_rows=5)
-    b.put_many([("detections", doc(f"d{i}"), "insert") for i in range(3)])
-    b.put_many([("raw_observations", doc(f"r{i}"), "insert") for i in range(4)])
+    b.put_many([("telegrams", doc(f"d{i}"), "insert") for i in range(3)])
+    b.put_many([("spectra", doc(f"r{i}"), "insert") for i in range(4)])
     counts = b.count_by_collection()
-    assert counts["detections"] == 3 and counts["raw_observations"] == 2 and b.pruned_rows == 2
+    assert counts["telegrams"] == 3 and counts["spectra"] == 2 and b.pruned_rows == 2
 
 
 def test_requires_id(tmp_path):

@@ -128,10 +128,17 @@ class Settings:
     upload_interval_s: float = 30.0
     max_backoff_s: float = 300.0
     max_buffer_rows: int = 200_000
-    raw_every_n_blocks: int = 600          # raw spectrum every 10 min (always on alerts)
-    measurement_every_n_blocks: int = 60   # channel measurements every 60 s (always on alerts)
+    spectrum_every_n_blocks: int = 600     # band spectrum every 10 min
+    observation_every_n_blocks: int = 60   # channel observations every 60 s
     psd_bins: int = 128
     save_iq_every_n: int = 0
+
+    # --- telegram decoding (receive-only) ---
+    decode_telegrams: bool = True
+    telegram_require_checksum: bool = True
+
+    # --- detection / ML (phase 2; off while building the research dataset) ---
+    enable_detection: bool = False
     # Atlas storage guard: above soft limit only detections/metadata are uploaded.
     atlas_quota_mb: float = 512.0
     atlas_soft_limit_pct: float = 85.0
@@ -174,8 +181,8 @@ class Settings:
             raise ConfigError("FRE_SAMPLE_RATE_HZ must be an integer multiple of FRE_BASEBAND_RATE_HZ")
         if self.channel_cutoff_hz >= self.baseband_rate_hz / 2:
             raise ConfigError("FRE_CHANNEL_CUTOFF_HZ must be below the baseband Nyquist frequency")
-        for name in ("batch_size", "max_buffer_rows", "raw_every_n_blocks",
-                     "measurement_every_n_blocks", "psd_bins", "baseline_window", "baseline_min_blocks"):
+        for name in ("batch_size", "max_buffer_rows", "spectrum_every_n_blocks",
+                     "observation_every_n_blocks", "psd_bins", "baseline_window", "baseline_min_blocks"):
             if getattr(self, name) < 1:
                 raise ConfigError(f"FRE_{name.upper()} must be >= 1")
         if self.save_iq_every_n < 0:

@@ -91,9 +91,12 @@ class FreModels:
 def generate_simulated_dataset(cfg: Settings, blocks_per_scenario: int = 40, seed: int = 7,
                                scenarios: tuple[str, ...] | None = None) -> pd.DataFrame:
     """Labelled feature rows from the synthetic generator (no I/O, no transmission)."""
+    import dataclasses
+
     from ..pipeline import BlockAnalyzer
     from ..sources.simulated import LABELS, SimulatedSource
 
+    cfg = dataclasses.replace(cfg, enable_detection=True)  # baseline-relative features need the rule engine
     rows: list[dict] = []
     for i, sc in enumerate(scenarios or LABELS):
         analyzer = BlockAnalyzer(cfg, models=None)

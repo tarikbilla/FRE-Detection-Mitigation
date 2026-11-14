@@ -10,7 +10,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import SCHEMA_VERSION, __version__
+from . import __version__
 from .config import ConfigError, Settings, redact_text
 from .logging_setup import setup_logging
 
@@ -79,6 +79,9 @@ def format_live(s: dict, color: bool = False) -> str:
         if up.get("storage_mb") is not None:
             head += f", {up['storage_mb']:.0f} MB used"
         head += ", QUOTA: alerts only)" if up.get("restricted") else ")"
+    tot = s.get("telegram_totals")
+    if tot:
+        head += f"  telegrams {tot['total']} ({tot['time']} time)"
     lines = [head]
     for c in s["channels"]:
         v = c["verdict"]
@@ -88,6 +91,10 @@ def format_live(s: dict, color: bool = False) -> str:
                      f"SNR {_num(c['snr_db'], '6.1f')} dB  off {_num(c['offset_hz'], '+6.1f')} Hz  "
                      f"FSK {_num(c['fsk_activity'], '4.2f')}  lines {c['lines']:<2}  {verdict} "
                      f"{c['signal_state']:<7} {extra}".rstrip())
+        for tg in c.get("telegrams", []):
+            mark = "ok " if tg["checksum_ok"] else "BAD"
+            detail = f"time={tg['time']}" if tg.get("time") else f"evu={tg['evu']}"
+            lines.append(f"        >> telegram [{mark}] {tg['kind']:<7} {detail}  {tg['raw_hex']}")
     return "\n".join(lines)
 
 
@@ -164,7 +171,7 @@ def cmd_simulate(args) -> int:
     stop = threading.Event()
     _install_signal_handlers(stop)
     collector = Collector(cfg, source, buffer, _uploader(cfg, buffer, not args.no_upload), _models(cfg),
-                          keep_all_measurements=True)
+                          keep_all_observations=True, on_block=_printer() if args.live else None)
     try:
         stats = collector.run(stop, max_blocks=args.blocks)
         _print({"stats": stats, "buffer_rows": buffer.count()})
@@ -241,14 +248,12 @@ def cmd_train(args) -> int:
         q = {"label": {"$ne": None}}
         if args.dataset_version:
             q["dataset_version"] = args.dataset_version
-        docs = list(store.db.measurements.find(q, {"features": 1, "band": 1, "label": 1}))
+        docs = list(store.db.observations.find(q, {"features": 1, "label": 1}))
         store.close()
-        df = pd.DataFrame([{**d["features"], "band_flatness": d.get("band", {}).get("band_flatness", 0.0),
-                            "band_floor_rise_db": d.get("band", {}).get("band_floor_rise_db", 0.0),
-                            "label": d["label"]} for d in docs])
+        df = pd.DataFrame([{**d["features"], "label": d["label"]} for d in docs])
         source = "mongodb"
         if df.empty:
-            print("no labelled measurements found in MongoDB", file=sys.stderr)
+            print("no labelled observations found in MongoDB", file=sys.stderr)
             return 1
     else:
         df = generate_simulated_dataset(cfg, blocks_per_scenario=args.blocks_per_scenario, seed=args.seed)
@@ -258,14 +263,8 @@ def cmd_train(args) -> int:
     out = {"model_path": str(cfg.model_path), "rows": int(len(df)), **report}
     if args.report:
         Path(args.report).write_text(json.dumps(out, indent=2, default=str))
-    if args.register:
-        buf = _buffer(cfg)
-        meta = report["metadata"]
-        buf.put("models", {"_id": f"{cfg.dataset_version}|{meta['trained_at']}", "schema_version": SCHEMA_VERSION,
-                           "station_id": cfg.station_id, "metadata": meta,
-                           "classification_report": report["classification_report"],
-                           "confusion_matrix": report["confusion_matrix"]}, mode="upsert")
-        buf.close()
+    report_path = Path(cfg.model_path).with_suffix(".report.json")
+    report_path.write_text(json.dumps(out, indent=2, default=str))
     _print({k: out[k] for k in ("model_path", "rows", "metadata", "confusion_matrix")})
     return 0
 
@@ -345,9 +344,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("train", help="train anomaly + classification models")
     s.add_argument("--blocks-per-scenario", type=int, default=40)
     s.add_argument("--seed", type=int, default=42)
-    s.add_argument("--from-db", action="store_true", help="train on labelled measurements in MongoDB")
+    s.add_argument("--from-db", action="store_true", help="train on labelled observations in MongoDB")
     s.add_argument("--dataset-version")
-    s.add_argument("--register", action="store_true", help="store model metadata in the 'models' collection")
     s.add_argument("--report", help="write the full evaluation report to this JSON file")
     s.set_defaults(func=cmd_train)
 
@@ -358,7 +356,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_mitigation_eval)
 
     s = sub.add_parser("export", help="export a collection to CSV/Parquet for analysis")
-    s.add_argument("--collection", default="measurements")
+    s.add_argument("--collection", default="observations")
     s.add_argument("--dataset-version")
     s.add_argument("--limit", type=int)
     s.add_argument("--out", required=True)

@@ -27,6 +27,13 @@ def cfg(tmp_path):
 
 
 @pytest.fixture
+def dcfg(cfg):
+    """Config with the detection/ML stack enabled (phase-2 behaviour)."""
+    import dataclasses
+    return dataclasses.replace(cfg, enable_detection=True)
+
+
+@pytest.fixture
 def mongomock_store():
     mongomock = pytest.importorskip("mongomock")
     from fre_platform.storage.mongo import MongoStore

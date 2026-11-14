@@ -7,9 +7,9 @@ from fre_platform.pipeline import BlockAnalyzer
 from .conftest import warmed_source
 
 
-def run_scenario(cfg, scenario, blocks=8, seed=9):
-    an = BlockAnalyzer(cfg)
-    src = warmed_source(cfg, an, seed=seed)
+def run_scenario(dcfg, scenario, blocks=8, seed=9):
+    an = BlockAnalyzer(dcfg)
+    src = warmed_source(dcfg, an, seed=seed)
     src.set_scenario(scenario)
     return [an.analyze(src.read_block()) for _ in range(blocks)]
 
@@ -31,19 +31,19 @@ def codes(results, channel="DCF49"):
     ("flood", "TELEGRAM_FLOOD"),
     ("spoof", "MULTIPLE_EMITTERS"),
 ])
-def test_rules_detect_scenarios(cfg, scenario, expected):
-    assert expected in codes(run_scenario(cfg, scenario))
+def test_rules_detect_scenarios(dcfg, scenario, expected):
+    assert expected in codes(run_scenario(dcfg, scenario))
 
 
-def test_normal_has_low_false_alarm_rate(cfg):
-    res = run_scenario(cfg, "normal", blocks=30, seed=21)
+def test_normal_has_low_false_alarm_rate(dcfg):
+    res = run_scenario(dcfg, "normal", blocks=30, seed=21)
     verdicts = [c["verdict"] for r in res for c in r["channels"]]
     assert verdicts.count("anomalous") / len(verdicts) <= 0.05
 
 
-def test_attack_does_not_poison_baseline(cfg):
-    an = BlockAnalyzer(cfg)
-    src = warmed_source(cfg, an, seed=4)
+def test_attack_does_not_poison_baseline(dcfg):
+    an = BlockAnalyzer(dcfg)
+    src = warmed_source(dcfg, an, seed=4)
     before = an.rules.band_baseline.median()
     src.set_scenario("jamming_wideband")
     for _ in range(20):
@@ -57,19 +57,19 @@ class _AlwaysCarrierLoss:
                 for _ in rows]
 
 
-def test_ml_does_not_alarm_on_never_received_channel(cfg):
+def test_ml_does_not_alarm_on_never_received_channel(dcfg):
     from fre_platform.sources.simulated import SimulatedSource
-    an = BlockAnalyzer(cfg, models=_AlwaysCarrierLoss())
-    src = SimulatedSource(cfg, scenario="carrier_loss", seed=2)  # DCF49 silent from the very start
-    res = [an.analyze(src.read_block()) for _ in range(cfg.baseline_min_blocks + 4)]
+    an = BlockAnalyzer(dcfg, models=_AlwaysCarrierLoss())
+    src = SimulatedSource(dcfg, scenario="carrier_loss", seed=2)  # DCF49 silent from the very start
+    res = [an.analyze(src.read_block()) for _ in range(dcfg.baseline_min_blocks + 4)]
     dcf49 = [c for r in res for c in r["channels"] if c["name"] == "DCF49"]
     assert all(c["signal_state"] == "absent" and c["verdict"] == "normal" for c in dcf49)
     assert dcf49[-1]["ml"]["label"] == "carrier_loss"  # still recorded for research
 
 
-def test_ml_escalates_on_established_channel(cfg):
-    an = BlockAnalyzer(cfg, models=_AlwaysCarrierLoss())
-    src = warmed_source(cfg, an, seed=3)
+def test_ml_escalates_on_established_channel(dcfg):
+    an = BlockAnalyzer(dcfg, models=_AlwaysCarrierLoss())
+    src = warmed_source(dcfg, an, seed=3)
     ch = [c for c in an.analyze(src.read_block())["channels"] if c["name"] == "DCF49"][0]
     assert ch["verdict"] == "suspicious" and ch["signal_state"] == "present"
 
