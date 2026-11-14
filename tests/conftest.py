@@ -8,11 +8,14 @@ from fre_platform.config import Settings
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch):
     """Tests never read the developer's real .env / service env file."""
+    atlas = os.environ.get("FRE_RUN_ATLAS_TESTS") == "1"
     for k in list(os.environ):
-        if k.startswith("FRE_") and k not in ("FRE_RUN_ATLAS_TESTS", "FRE_TEST_HARDWARE"):
-            if k == "FRE_MONGODB_URI" and os.environ.get("FRE_RUN_ATLAS_TESTS") == "1":
-                continue
-            monkeypatch.delenv(k, raising=False)
+        if not k.startswith("FRE_") or k in ("FRE_RUN_ATLAS_TESTS", "FRE_TEST_HARDWARE"):
+            continue
+        # opt-in Atlas tests need the connection settings (URI or parts, or the env file)
+        if atlas and (k == "FRE_ENV_FILE" or k.startswith("FRE_MONGODB_")):
+            continue
+        monkeypatch.delenv(k, raising=False)
 
 
 @pytest.fixture
