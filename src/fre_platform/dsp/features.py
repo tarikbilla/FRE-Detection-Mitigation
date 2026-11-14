@@ -130,8 +130,9 @@ class FeatureExtractor:
         y = signal.sosfilt(self.sos, y)
         return y[:: self.dec]
 
-    def channel(self, block: IQBlock, channel: Channel, band_feats: dict | None = None) -> dict:
-        y = self.baseband(block, channel)
+    def channel(self, block: IQBlock, channel: Channel, band_feats: dict | None = None,
+                baseband: np.ndarray | None = None) -> dict:
+        y = self.baseband(block, channel) if baseband is None else baseband
         fs = self.fs_bb
         pw = np.abs(y) ** 2
         power = float(np.mean(pw))
