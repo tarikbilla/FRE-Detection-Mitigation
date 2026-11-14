@@ -56,6 +56,22 @@ def test_env_file_loading(tmp_path, monkeypatch):
     assert s.station_id == "from-file" and s.batch_size == 11
 
 
+def test_uri_built_from_parts_and_redacted():
+    s = Settings.from_env(env={"FRE_MONGODB_USERNAME": "u", "FRE_MONGODB_PASSWORD": "p@ss/w:rd",
+                               "FRE_MONGODB_HOST": "cluster0.abc.mongodb.net"})
+    assert s.mongodb_uri == "mongodb+srv://u:p%40ss%2Fw%3Ard@cluster0.abc.mongodb.net/?retryWrites=true&w=majority"
+    assert "p%40ss" not in str(s.safe_dict())
+
+
+@pytest.mark.parametrize("env", [
+    {"FRE_MONGODB_USERNAME": "u", "FRE_MONGODB_PASSWORD": "p"},                          # host missing
+    {"FRE_MONGODB_USERNAME": "u", "FRE_MONGODB_PASSWORD": "p", "FRE_MONGODB_HOST": "u:p@h/x"},
+])
+def test_incomplete_or_bad_parts(env):
+    with pytest.raises(ConfigError):
+        Settings.from_env(env=env)
+
+
 def test_missing_env_file():
     with pytest.raises(ConfigError):
         Settings.from_env(env_file="/nonexistent/fre.env")

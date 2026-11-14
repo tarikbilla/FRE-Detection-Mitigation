@@ -254,5 +254,30 @@ class Settings:
                 raise
             except (ValueError, TypeError) as exc:
                 raise ConfigError(f"invalid value for FRE_{f.name.upper()}: {exc}") from None
+        if "mongodb_uri" not in kw:
+            built = build_uri_from_parts(env)
+            if built:
+                kw["mongodb_uri"] = built
         kw.update(overrides)
         return cls(**kw).validate()
+
+
+def build_uri_from_parts(env: Mapping[str, str]) -> str | None:
+    """Build an Atlas SRV URI from FRE_MONGODB_USERNAME / _PASSWORD / _HOST (all required).
+
+    Lets the password live in its own variable; it is URL-encoded here.
+    """
+    from urllib.parse import quote_plus
+
+    user = (env.get("FRE_MONGODB_USERNAME") or "").strip()
+    pw = (env.get("FRE_MONGODB_PASSWORD") or "").strip()
+    host = (env.get("FRE_MONGODB_HOST") or "").strip()
+    if not (user or pw or host):
+        return None
+    missing = [n for n, v in (("USERNAME", user), ("PASSWORD", pw), ("HOST", host)) if not v]
+    if missing:
+        raise ConfigError("incomplete MongoDB settings, missing: " + ", ".join(f"FRE_MONGODB_{m}" for m in missing))
+    host = host.removeprefix("mongodb+srv://").strip("/")
+    if "@" in host or "/" in host:
+        raise ConfigError("FRE_MONGODB_HOST must be only the cluster host, e.g. cluster0.abcde.mongodb.net")
+    return f"mongodb+srv://{quote_plus(user)}:{quote_plus(pw)}@{host}/?retryWrites=true&w=majority"
