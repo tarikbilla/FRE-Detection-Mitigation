@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-CRED_URI = re.compile(r"mongodb(\+srv)?://[^:/\s<>]+:[^@\s<>]+@")
+# literal user:password@ in a URI; {...} template placeholders and <...> docs are not secrets
+CRED_URI = re.compile(r"mongodb(\+srv)?://[^:/\s<>{}]+:[^@\s<>{}]+@")
 
 
 def tracked_files():
