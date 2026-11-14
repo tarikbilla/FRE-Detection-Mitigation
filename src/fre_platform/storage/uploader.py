@@ -33,7 +33,31 @@ class Uploader(threading.Thread):
         self._wake = threading.Event()
         self._flush_lock = threading.Lock()
         self.stats = {"uploaded": 0, "rejected": 0, "failures": 0, "consecutive_failures": 0, "online": False,
-                      "last_success": None, "last_error": None, "backoff_s": cfg.upload_interval_s}
+                      "last_success": None, "last_error": None, "backoff_s": cfg.upload_interval_s,
+                      "storage_used_mb": None, "quota_restricted": False}
+        self._last_quota_check = float("-inf")
+
+    # ------------------------------------------------------------------
+    BULK_COLLECTIONS = ("raw_observations", "measurements")
+
+    def _check_quota(self, store: MongoStore) -> None:
+        """Free-tier guard: near the Atlas quota, keep bulk data local and upload only
+        detections and metadata (bulk rows stay buffered / are pruned locally)."""
+        if time.monotonic() - self._last_quota_check < self.cfg.quota_check_s:
+            return
+        self._last_quota_check = time.monotonic()
+        used_fn = getattr(store, "storage_used_mb", None)
+        used = used_fn() if used_fn else None
+        self.stats["storage_used_mb"] = used
+        if used is None:
+            return
+        limit = self.cfg.atlas_quota_mb * self.cfg.atlas_soft_limit_pct / 100
+        restricted = used >= limit
+        if restricted != self.stats["quota_restricted"]:
+            log.warning("Atlas storage %s soft limit: %s", "above" if restricted else "back below",
+                        "uploading detections/metadata only" if restricted else "resuming full upload",
+                        extra={"used_mb": used, "limit_mb": round(limit, 1), "quota_mb": self.cfg.atlas_quota_mb})
+        self.stats["quota_restricted"] = restricted
 
     # ------------------------------------------------------------------
     def _ensure_store(self) -> MongoStore:
@@ -50,8 +74,10 @@ class Uploader(threading.Thread):
         with self._flush_lock:
             try:
                 store = self._ensure_store()
+                self._check_quota(store)
+                exclude = self.BULK_COLLECTIONS if self.stats["quota_restricted"] else ()
                 for _ in range(max_batches):
-                    rows = self.buffer.fetch_batch(self.cfg.batch_size)
+                    rows = self.buffer.fetch_batch(self.cfg.batch_size, exclude=exclude)
                     if not rows:
                         break
                     groups: dict[str, list] = defaultdict(list)

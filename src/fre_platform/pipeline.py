@@ -139,7 +139,9 @@ class Collector:
                 "ml": (c["ml"] or {}).get("label"),
             } for c in res["channels"]],
             "buffer_rows": self.buffer.count(),
-            "upload": None if up is None else {"online": up["online"], "uploaded": up["uploaded"]},
+            "upload": None if up is None else {"online": up["online"], "uploaded": up["uploaded"],
+                                               "storage_mb": up.get("storage_used_mb"),
+                                               "restricted": up.get("quota_restricted", False)},
         }
 
     def _write_live(self, summary: dict) -> None:

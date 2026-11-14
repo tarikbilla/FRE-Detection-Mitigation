@@ -123,14 +123,19 @@ class Settings:
     data_dir: Path = Path("data")
     log_dir: Path | None = None
     model_path: Path = Path("models/fre_models.joblib")
-    batch_size: int = 200
-    upload_interval_s: float = 15.0
+    # Defaults sized for the MongoDB Atlas free tier (M0, 512 MB): ~10 MB/day.
+    batch_size: int = 100
+    upload_interval_s: float = 30.0
     max_backoff_s: float = 300.0
     max_buffer_rows: int = 200_000
-    raw_every_n_blocks: int = 10
-    measurement_every_n_blocks: int = 5
-    psd_bins: int = 256
+    raw_every_n_blocks: int = 600          # raw spectrum every 10 min (always on alerts)
+    measurement_every_n_blocks: int = 60   # channel measurements every 60 s (always on alerts)
+    psd_bins: int = 128
     save_iq_every_n: int = 0
+    # Atlas storage guard: above soft limit only detections/metadata are uploaded.
+    atlas_quota_mb: float = 512.0
+    atlas_soft_limit_pct: float = 85.0
+    quota_check_s: float = 600.0
 
     # --- detection thresholds ---
     baseline_window: int = 300

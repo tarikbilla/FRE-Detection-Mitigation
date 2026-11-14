@@ -106,6 +106,36 @@ def test_permanent_rejection_goes_to_dead_letter(cfg, tmp_path, mongomock_store)
     assert buf.count() == 0 and buf.dead_letter_count() == 1 and up.stats["rejected"] == 1
 
 
+def test_free_tier_quota_guard(cfg, tmp_path, mongomock_store):
+    class NearlyFullStore(FlakyStore):
+        used = 500.0  # MB of a 512 MB free tier
+
+        def storage_used_mb(self):
+            return self.used
+
+    buf = LocalBuffer(tmp_path / "b.sqlite3")
+    buf.put_many([("measurements", mdoc(i), "insert") for i in range(5)])
+    buf.put("detections", {"_id": "d1", "verdict": "anomalous"})
+    store = NearlyFullStore(mongomock_store, 0)
+    up = Uploader(buf, lambda: store, cfg)
+    assert up.flush_once()
+    assert up.stats["quota_restricted"] and up.stats["storage_used_mb"] == 500.0
+    assert mongomock_store.db.detections.count_documents({}) == 1      # alerts still uploaded
+    assert mongomock_store.db.measurements.count_documents({}) == 0    # bulk data kept locally
+    assert buf.count_by_collection() == {"measurements": 5}
+
+    store.used = 100.0  # space freed (e.g. old data archived/deleted)
+    up._last_quota_check = float("-inf")
+    assert up.flush_once() and not up.stats["quota_restricted"]
+    assert mongomock_store.db.measurements.count_documents({}) == 5 and buf.count() == 0
+
+
+def test_fetch_batch_exclude(tmp_path):
+    buf = LocalBuffer(tmp_path / "b.sqlite3")
+    buf.put_many([("measurements", mdoc(1), "insert"), ("detections", {"_id": "d"}, "insert")])
+    assert [r.collection for r in buf.fetch_batch(10, exclude=("measurements", "raw_observations"))] == ["detections"]
+
+
 def test_background_thread_uploads(cfg, tmp_path, mongomock_store):
     buf = LocalBuffer(tmp_path / "b.sqlite3")
     up = Uploader(buf, lambda: mongomock_store, cfg)

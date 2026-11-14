@@ -123,11 +123,12 @@ class LocalBuffer:
                 log.warning("buffer full: dropped oldest rows", extra={"collection": coll, "rows": cur.rowcount})
 
     # ----------------------------------------------------------------- read
-    def fetch_batch(self, limit: int) -> list[BufferedRow]:
+    def fetch_batch(self, limit: int, exclude: tuple[str, ...] = ()) -> list[BufferedRow]:
+        where = f"WHERE collection NOT IN ({','.join('?' * len(exclude))})" if exclude else ""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT collection,id,mode,doc,attempts FROM outbox ORDER BY created_at, rowid LIMIT ?",
-                (limit,)).fetchall()
+                f"SELECT collection,id,mode,doc,attempts FROM outbox {where} ORDER BY created_at, rowid LIMIT ?",
+                (*exclude, limit)).fetchall()
         return [BufferedRow(c, i, m, loads(d), a) for c, i, m, d, a in rows]
 
     def delete(self, keys: list[tuple[str, str]]) -> None:

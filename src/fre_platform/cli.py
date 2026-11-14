@@ -73,8 +73,12 @@ def format_live(s: dict, color: bool = False) -> str:
     if s["band_rules"]:
         head += "  band: " + ",".join(s["band_rules"])
     up = s.get("upload")
-    head += f"  buffer {s['buffer_rows']}" + ("" if up is None else
-                                              f"  atlas {'online' if up['online'] else 'offline'} ({up['uploaded']} up)")
+    head += f"  buffer {s['buffer_rows']}"
+    if up is not None:
+        head += f"  atlas {'online' if up['online'] else 'offline'} ({up['uploaded']} up"
+        if up.get("storage_mb") is not None:
+            head += f", {up['storage_mb']:.0f} MB used"
+        head += ", QUOTA: alerts only)" if up.get("restricted") else ")"
     lines = [head]
     for c in s["channels"]:
         v = c["verdict"]

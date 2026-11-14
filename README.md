@@ -147,6 +147,24 @@ FRE_MONGODB_DB=fre_dataset
 If the URI is not set, the collector keeps running and stores everything in the local buffer;
 it is uploaded automatically once the URI is configured.
 
+### Atlas free tier (M0, 512 MB)
+
+The defaults are sized for the free tier. Measured document sizes: measurement ≈ 1.2 KB,
+raw spectrum ≈ 2–4 KB. With 4 channels:
+
+| Setting | Data per day | 512 MB lasts |
+|---|---|---|
+| defaults (measurements every 60 s, raw every 10 min) | ≈ 10 MB incl. indexes | ≈ 50 days |
+| measurements every 5 s, raw every 10 s (high resolution) | ≈ 120 MB | ≈ 4 days |
+
+Detections (alerts) are always stored in full. Every 10 minutes the uploader checks the
+database size (`dbStats`, data + indexes). Above `FRE_ATLAS_SOFT_LIMIT_PCT` (85 %) of
+`FRE_ATLAS_QUOTA_MB` it uploads **only detections and metadata** and keeps measurements/raw
+spectra in the local buffer; `watch` then shows `QUOTA: alerts only`. To free space, export
+old data (`fre-platform export ...`) and delete it in Atlas, or bump `FRE_DATASET_VERSION`
+and drop old versions. The free tier is also throughput-limited, so keep `FRE_BATCH_SIZE`
+around 100.
+
 ### Main settings
 
 | Variable | Default | Meaning |
@@ -163,9 +181,11 @@ it is uploaded automatically once the URI is configured.
 | `FRE_STATION_ID` | hostname | station name in every document |
 | `FRE_DATASET_VERSION` | `2026.11-v1` | dataset version tag |
 | `FRE_EXPERIMENT_ID`, `FRE_EXPERIMENT_DESCRIPTION`, `FRE_ANTENNA`, `FRE_LOCATION_LABEL` | | experimental conditions |
-| `FRE_RAW_EVERY_N_BLOCKS` | `10` | store a raw spectrum every N blocks (always on alerts) |
-| `FRE_MEASUREMENT_EVERY_N_BLOCKS` | `5` | store channel measurements every N blocks (always on alerts) |
-| `FRE_BATCH_SIZE` / `FRE_UPLOAD_INTERVAL_S` | `200` / `15` | upload batching |
+| `FRE_RAW_EVERY_N_BLOCKS` | `600` | store a raw spectrum every N blocks (always on alerts) |
+| `FRE_MEASUREMENT_EVERY_N_BLOCKS` | `60` | store channel measurements every N blocks (always on alerts) |
+| `FRE_PSD_BINS` | `128` | bins in the stored raw spectrum |
+| `FRE_ATLAS_QUOTA_MB` / `FRE_ATLAS_SOFT_LIMIT_PCT` | `512` / `85` | free-tier storage guard |
+| `FRE_BATCH_SIZE` / `FRE_UPLOAD_INTERVAL_S` | `100` / `30` | upload batching |
 | `FRE_MAX_BUFFER_ROWS` | `200000` | local buffer cap (oldest raw spectra dropped first) |
 | `FRE_SAVE_IQ_EVERY_N` | `0` | also save raw IQ (`.cf32`) every N blocks, 0 = off |
 | `FRE_DATA_DIR` / `FRE_LOG_DIR` / `FRE_MODEL_PATH` | `/var/lib/fre-platform`, ... | file locations |
@@ -263,8 +283,12 @@ sudo systemctl restart fre-collector
 
 ## 9. Security
 
-* MongoDB credentials previously committed to this repository were removed from Git history;
-  they are compromised and **must be rotated in Atlas**.
+* MongoDB credentials previously committed to this repository were removed from the `main`
+  history. Because the repository is public and GitHub can still serve the old commit by its
+  SHA, those credentials must be treated as **exposed**. Rotating the database user's password
+  is strongly recommended. Until it is rotated, at minimum: restrict Atlas *Network Access* to
+  the Pi's IP (no `0.0.0.0/0`), give the user `readWrite` on `fre_dataset` only, and ask GitHub
+  Support to purge the cached commit.
 * Secrets only live in `/etc/fre-platform/fre.env` (root-owned, 0640) or a local `.env`;
   `.gitignore` blocks `.env`, `*.env` and `*credentials*`; a test fails if a credential-bearing
   URI is ever committed.

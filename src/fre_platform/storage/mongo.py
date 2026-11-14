@@ -201,6 +201,14 @@ class MongoStore:
         return {"insert_read_delete_ok": bool(back and back["station_id"] == station_id and gone),
                 "roundtrip_ms": round((time.perf_counter() - t) * 1000, 1)}
 
+    def storage_used_mb(self) -> float | None:
+        """Data + index size of the database in MB (what counts against the M0 quota)."""
+        try:
+            s = self.db.command("dbStats")
+            return round((s.get("dataSize", 0) + s.get("indexSize", 0)) / 1024 / 1024, 2)
+        except (OperationFailure, NotImplementedError, TypeError, KeyError):
+            return None
+
     def counts(self) -> dict[str, int]:
         return {c: self.db[c].estimated_document_count() for c in COLLECTIONS}
 
