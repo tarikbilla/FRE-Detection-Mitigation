@@ -88,7 +88,7 @@ _SPECIAL_PARSERS = {
 class Settings:
     # --- MongoDB (secret URI is excluded from repr) ---
     mongodb_uri: str | None = field(default=None, repr=False)
-    mongodb_db: str = "fre_research"
+    mongodb_db: str = "fre_dataset"
     mongodb_app_name: str = "fre-platform"
     mongodb_timeout_ms: int = 8000
 
