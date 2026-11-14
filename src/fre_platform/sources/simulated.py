@@ -32,7 +32,7 @@ class SimulatedSource(IQSource):
     def __init__(self, cfg: Settings, scenario: str | None = None, seed: int | None = None,
                  realtime: bool = False, target_channel: str | None = None, max_blocks: int | None = None,
                  anomaly_probability: float = 0.35, emit_telegrams: bool = False,
-                 telegram_period_s: float = 10.0):
+                 telegram_period_s: float = 10.0, spoof_time_offset_s: float = 0.0):
         scenario = scenario or cfg.sim_scenario
         if scenario not in SCENARIOS:
             raise ValueError(f"unknown scenario {scenario!r}; choose from {SCENARIOS}")
@@ -59,6 +59,9 @@ class SimulatedSource(IQSource):
         # Real DIN 19244 time-telegram injection (receive-chain verification).
         self.emit_telegrams = emit_telegrams
         self.telegram_period_s = telegram_period_s
+        # Non-zero injects time telegrams whose encoded time is wrong by this many
+        # seconds - a labelled replay/spoof scenario (BlinkenCity Attack 1).
+        self.spoof_time_offset_s = spoof_time_offset_s
         self._tele_dev: dict[str, np.ndarray] = {c.name: np.zeros(0) for c in self.channels}
 
     def _telegram_dev(self, n: int) -> np.ndarray:
@@ -71,9 +74,11 @@ class SimulatedSource(IQSource):
 
         from ..protocol.synth import build_time_frame, bytes_to_8e1_bits
         buf = self._shared_tele if hasattr(self, "_shared_tele") else np.zeros(0)
+        from datetime import timedelta
         while len(buf) < n:
             ts = datetime.fromtimestamp((self._t0_ns + self._sample_index * 1e9 / self.fs) / 1e9, timezone.utc)
-            bits = bytes_to_8e1_bits(build_time_frame(ts.replace(microsecond=0)))
+            ts = (ts + timedelta(seconds=self.spoof_time_offset_s)).replace(microsecond=0)
+            bits = bytes_to_8e1_bits(build_time_frame(ts))
             sps = int(round(self.fs / BAUD))
             tele = np.array([(-FSK_SHIFT_HZ if b == 1 else FSK_SHIFT_HZ) for b in bits]).repeat(sps)
             gap = max(0, int(self.telegram_period_s * self.fs) - len(tele))

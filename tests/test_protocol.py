@@ -70,6 +70,32 @@ def test_decode_time_payload_rejects_invalid():
     assert decode_time_payload(bytes([0, 0, 99, 0, 0, 99, 0])) is None  # minute 99, month 99
 
 
+# -- authenticity / real-vs-fake assessment -----------------------------------
+def test_authenticity_of_plausible_time_telegram():
+    from fre_platform.protocol.telegram import assess_authenticity
+    now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    tg = {"checksum_ok": True, "kind": "time", "time": {"iso": now.isoformat()}}
+    a = assess_authenticity(tg, now, signal={"snr_db": 30.0, "power_dbfs": -60.0}, ntp_synced=True)
+    assert a["assessment"] == "authentic_candidate" and abs(a["clock_offset_s"]) < 1
+    assert a["time_plausible"] and a["signal"]["snr_db"] == 30.0
+
+
+def test_authenticity_flags_spoofed_time():
+    from fre_platform.protocol.telegram import assess_authenticity
+    now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    spoofed = now.replace(hour=15)  # +3 h replay/spoof
+    tg = {"checksum_ok": True, "kind": "time", "time": {"iso": spoofed.isoformat()}}
+    a = assess_authenticity(tg, now, ntp_synced=True)
+    assert a["assessment"] == "implausible" and a["clock_offset_s"] == 10800.0 and a["time_plausible"] is False
+
+
+def test_authenticity_integrity_fail_on_bad_checksum():
+    from fre_platform.protocol.telegram import assess_authenticity
+    now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    a = assess_authenticity({"checksum_ok": False, "kind": "command"}, now, ntp_synced=True)
+    assert a["assessment"] == "integrity_fail"
+
+
 # -- full receive chain: synth baseband -> FSK demod -> framer -> decoder -------
 def test_fsk_demod_recovers_time_telegram():
     from fre_platform.dsp.demod import FskDemodulator

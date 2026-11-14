@@ -56,6 +56,23 @@ def test_telegrams_decoded_and_stored(cfg, tmp_path, mongomock_store):
     assert db.telegrams.count_documents({}) == before
 
 
+def test_spoofed_time_telegrams_flagged(cfg, tmp_path, mongomock_store):
+    """A replay/spoof run (wrong encoded time) is marked implausible in the dataset."""
+    buf = LocalBuffer(tmp_path / "b.sqlite3")
+    up = Uploader(buf, lambda: mongomock_store, cfg)
+    src = SimulatedSource(cfg, scenario="normal", seed=5, emit_telegrams=True, spoof_time_offset_s=3600)
+    col = Collector(cfg, src, buf, up, keep_all_observations=True)
+    stats = col.run(max_blocks=60)
+
+    db = mongomock_store.db
+    assert stats["telegrams_time"] > 0 and stats["telegrams_suspect"] > 0
+    tg = db.telegrams.find_one({"kind": "time"})
+    assert tg["integrity"]["assessment"] == "implausible"
+    assert abs(tg["integrity"]["clock_offset_s"] - 3600) < 5 and tg["integrity"]["time_plausible"] is False
+    # authentic vs spoofed is queryable for research
+    assert db.telegrams.count_documents({"integrity.assessment": "implausible"}) > 0
+
+
 def test_detection_enabled_adds_verdicts(dcfg, tmp_path, mongomock_store):
     buf = LocalBuffer(tmp_path / "b.sqlite3")
     up = Uploader(buf, lambda: mongomock_store, dcfg)

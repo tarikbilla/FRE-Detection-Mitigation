@@ -81,7 +81,8 @@ def format_live(s: dict, color: bool = False) -> str:
         head += ", QUOTA: alerts only)" if up.get("restricted") else ")"
     tot = s.get("telegram_totals")
     if tot:
-        head += f"  telegrams {tot['total']} ({tot['time']} time)"
+        head += f"  telegrams {tot['total']} ({tot['time']} time"
+        head += f", {tot['suspect']} suspect)" if tot.get("suspect") else ")"
     lines = [head]
     for c in s["channels"]:
         v = c["verdict"]
@@ -94,7 +95,10 @@ def format_live(s: dict, color: bool = False) -> str:
         for tg in c.get("telegrams", []):
             mark = "ok " if tg["checksum_ok"] else "BAD"
             detail = f"time={tg['time']}" if tg.get("time") else f"evu={tg['evu']}"
-            lines.append(f"        >> telegram [{mark}] {tg['kind']:<7} {detail}  {tg['raw_hex']}")
+            verdict = tg.get("assessment") or ""
+            if tg.get("clock_offset_s") is not None:
+                verdict += f" (clock {tg['clock_offset_s']:+.0f}s)"
+            lines.append(f"        >> telegram [{mark}] {tg['kind']:<7} {detail}  {verdict}  {tg['raw_hex']}")
     return "\n".join(lines)
 
 

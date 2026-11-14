@@ -1,313 +1,293 @@
 # FRE Detection & Mitigation Research Platform
 
-Python platform that **receives** long-wave radio ripple-control (FRE / EFR) signals with an
-**Airspy HF+ Discovery** on a Raspberry Pi, extracts features, detects anomalies, and stores a
-versioned research dataset in **MongoDB Atlas** (database `fre_dataset`).
+A receive-only research platform that **observes** long-wave radio ripple-control
+(Funkrundsteuerung / EFR / FRE) signals with an **Airspy HF+ Discovery** on a
+Raspberry Pi, **decodes the telegrams**, extracts signal features, assesses each
+telegram's **authenticity**, and builds a clean, versioned **research dataset** in
+**MongoDB Atlas** (database `fre_dataset`) for further analysis and machine learning.
 
-> **Receive-only.** The platform contains no transmit code path and the Airspy HF+ Discovery
-> has no transmitter. Attack scenarios (jamming, spoofing, flooding...) exist only as
-> **software simulations** for defensive research. Do not use it to interfere with utility
-> infrastructure.
+> **Receive-only and defensive.** The platform contains no transmit code path and
+> the Airspy HF+ Discovery has no transmitter. It decodes the plaintext broadcast
+> time telegram and classifies command telegrams at header level only — it never
+> crafts, replays, acts on, or transmits any telegram, and never touches utility
+> equipment. Attack conditions (jamming, spoofing, time-replay) exist only as
+> in-memory **simulations** for building labelled datasets and defensive research.
+> Background and signal spec: the public *BlinkenCity* talk, 38C3 (2024).
 
 ```
-Airspy HF+ Discovery ─► airspyhf_rx (IQ, 192 kS/s) ─► features + detection ─► SQLite buffer ─► MongoDB Atlas
-                                                         (rules + ML)        (survives outages)   (fre_dataset)
+Airspy HF+ Discovery ─► airspyhf_rx ─► per-channel DDC ─┬─► features ─────────► observations
+  (IQ, 192 kS/s)        (receive-only)                  ├─► band spectrum ────► spectra
+                                                        └─► FSK demod ─► DIN 19244 decode
+                                                                         + authenticity ─► telegrams
+                                             SQLite buffer (survives outages) ─► MongoDB Atlas (fre_dataset)
 ```
+
+---
+
+## What this dataset is for
+
+The dataset is designed to let researchers study **how to tell authentic FRE
+signals from false or modified ones**, so receivers can be protected against an
+attacker who injects spoofed/replayed telegrams:
+
+* **`telegrams`** — every decoded telegram with its raw bytes, checksum result,
+  decoded content (for the plaintext time broadcast), and a deterministic
+  **authenticity assessment** (clock offset vs the receiver's trusted clock,
+  received-signal fingerprint, plausibility). The time telegram has *no* integrity
+  or replay protection, so a spoofed timestamp stands out as a large clock offset.
+* **`observations`** — per-channel signal-feature time-series, ready for ML.
+* **`spectra`** — periodic band spectra + capture quality.
+* **`sessions`** — full reproducibility metadata for every capture run.
+
+Detection/ML is a **later phase** (`FRE_ENABLE_DETECTION`, off by default) so the
+dataset stays clean; the platform ships the detector/ML code ready for it.
 
 ---
 
 ## 1. Quick start (Raspberry Pi)
 
-The Pi used for development already has everything installed. On a fresh Pi:
-
 ```bash
-# 1. get the code
 git clone git@github.com:tarikbilla/FRE-Detection-Mitigation.git ~/Desktop/FRE-Detection-Mitigation
 cd ~/Desktop/FRE-Detection-Mitigation
-
-# 2. install dependencies, Python env, config file, ML model and the systemd service
-sudo deploy/install.sh --apt --train
-
-# 3. add your MongoDB Atlas connection string (see section 3)
-sudo nano /etc/fre-platform/fre.env
-
-# 4. restart and check
+sudo deploy/install.sh --apt          # deps, venv, config file, systemd service
+sudo nano /etc/fre-platform/fre.env   # add MongoDB Atlas credentials (section 3)
 sudo systemctl restart fre-collector
 sudo systemctl status fre-collector
 ```
 
-From then on the collector **starts automatically at boot** and restarts itself if it crashes.
-
-Requirements: Raspberry Pi with Kali / Raspberry Pi OS / Debian, Python ≥ 3.11, the Airspy
-HF+ Discovery connected by USB, `airspyhf_rx` / `airspyhf_info` (from
-[airspyhf](https://github.com/airspy/airspyhf)), an **LF-capable antenna** on the receiver's
-antenna input, and internet access for Atlas.
+The collector then **runs continuously, starts at boot, and restarts after a
+crash**. Requirements: Raspberry Pi (Kali / Raspberry Pi OS / Debian), Python ≥ 3.11,
+Airspy HF+ Discovery on USB, `airspyhf_rx`/`airspyhf_info`, an **LF antenna** on the
+receiver, and internet access for Atlas.
 
 ---
 
-## 2. How to run it
+## 2. How to run and watch it
 
-All commands are run from the repository folder. `fre-platform` is installed into `.venv`:
+Run from the repo folder with the service's settings:
 
 ```bash
 cd ~/Desktop/FRE-Detection-Mitigation
-source .venv/bin/activate          # or prefix commands with .venv/bin/
-export FRE_ENV_FILE=/etc/fre-platform/fre.env   # use the service's settings
+export FRE_ENV_FILE=/etc/fre-platform/fre.env
 ```
 
-### Live view of the received FRE data
-
-The collector runs **forever** (until Ctrl+C / `systemctl stop`) and prints every received
-block when started with `--live`:
+### Live view (received signals + decoded telegrams)
 
 ```bash
-# A) watch the background service live (the service keeps running and uploading)
-FRE_ENV_FILE=/etc/fre-platform/fre.env .venv/bin/fre-platform watch
+# follow the running service without stopping it
+.venv/bin/fre-platform watch
 
-# B) or run the collector yourself in the foreground with live output
+# or run in the foreground with live output (Ctrl+C to stop)
 sudo systemctl stop fre-collector
-FRE_ENV_FILE=/etc/fre-platform/fre.env .venv/bin/fre-platform --log-level WARNING collect --live
+.venv/bin/fre-platform --log-level WARNING collect --live
 ```
 
-Example output (one block per second, one line per channel):
-
 ```
-01:23:45.120  #1234   band floor  -136.5 dBFS/Hz  power  -83.2 dBFS  buffer 85  atlas online (5120 up)
-    DCF77     77.5 kHz  P  -62.4 dBFS  SNR   38.2 dB  off   +0.3 Hz  FSK 0.00  lines 0  normal     present
-    DCF49    129.1 kHz  P  -70.1 dBFS  SNR   31.5 dB  off   -1.8 Hz  FSK 0.21  lines 0  normal     present
-    HGA22    135.6 kHz  P  -71.0 dBFS  SNR   30.2 dB  off   +2.4 Hz  FSK 0.00  lines 0  normal     present
-    DCF39    139.0 kHz  P  -69.8 dBFS  SNR   33.0 dB  off  +41.0 Hz  FSK 0.18  lines 0  suspicious present FREQ_OFFSET
+02:24:38.120  #1234  band floor -136.5 dBFS/Hz  power -83.2 dBFS  buffer 0  atlas online (5120 up, 2 MB used)  telegrams 37 (37 time)
+    DCF49    129.1 kHz  P -70.1 dBFS  SNR 31.5 dB  off  -1.8 Hz  FSK 0.21  lines 0  normal     present
+        >> telegram [ok ] time    time=2026-11-14T02:24:38+00:00  authentic_candidate (clock -1s)  680a0a68570000...16
 ```
 
-`P` = channel power, `SNR` = signal-to-noise ratio, `off` = carrier frequency offset,
-`FSK` = fraction of the block with FSK telegram activity, `lines` = unexpected spectral lines,
-then the verdict (`normal` / `suspicious` / `anomalous`), the signal state and any rule codes.
+A spoofed/replayed time telegram shows up as `implausible (clock +3600s)`.
 
 ### Other commands
 
-| What you want | Command |
+| Goal | Command |
 |---|---|
-| Check the effective settings (password hidden) | `fre-platform show-config` |
-| Test the MongoDB Atlas connection | `fre-platform db-check` |
-| Collect real data for 30 s in the foreground (no upload) | `sudo systemctl stop fre-collector` then `fre-platform --log-format text collect --max-blocks 30 --no-upload` |
-| Collect continuously in the foreground | `fre-platform --log-format text collect` (Ctrl+C to stop) |
-| See what is waiting in the local buffer | `fre-platform buffer-status` |
-| Upload everything buffered right now | `fre-platform flush` |
-| Run a simulated attack scenario through the pipeline | `fre-platform simulate --scenario mixed --blocks 60 --no-upload` |
-| (Re)train the ML models | `fre-platform train --blocks-per-scenario 30 --register` |
-| Compare mitigation strategies (simulation) | `fre-platform mitigation-eval --blocks 200` |
-| Export a collection to CSV | `fre-platform export --collection measurements --out measurements.csv` |
+| Effective settings (secrets hidden) | `fre-platform show-config` |
+| Test MongoDB Atlas connectivity | `fre-platform db-check` |
+| Local buffer / collector status | `fre-platform buffer-status` |
+| Upload buffered data now | `fre-platform flush` |
+| Simulate authentic telegrams | `fre-platform simulate --scenario normal --blocks 120 --no-upload` |
+| Simulate a time-spoof capture | `FRE_* …` + `simulate` with a spoofing source (see tests) |
+| Export a collection to CSV/Parquet | `fre-platform export --collection telegrams --out telegrams.csv` |
+| (phase 2) train ML models | `fre-platform train --blocks-per-scenario 30` |
+| (phase 2) mitigation study | `fre-platform mitigation-eval --blocks 200` |
 
-> Only one program can open the Airspy at a time. Stop the service
-> (`sudo systemctl stop fre-collector`) before running `collect` by hand, and start it again
-> afterwards.
+Only one program can open the Airspy at a time — stop the service before a manual
+`collect`, and start it again afterwards.
 
-### Running as a service (normal operation)
+### Service control
 
 ```bash
-sudo systemctl start   fre-collector      # start
-sudo systemctl stop    fre-collector      # stop
-sudo systemctl restart fre-collector      # after changing /etc/fre-platform/fre.env
-systemctl status fre-collector            # state
-journalctl -u fre-collector -f            # live logs (JSON lines)
-sudo systemctl disable fre-collector      # do not start at boot
+sudo systemctl {start,stop,restart} fre-collector
+systemctl status fre-collector
+journalctl -u fre-collector -f           # live JSON logs
 ```
 
-Logs are also written to `/var/log/fre-platform/fre-platform.log` (rotated, 5 × 10 MB). A
-heartbeat with block counts, verdicts, buffer size and upload state is logged every 60 s and
-written to `/var/lib/fre-platform/status.json`.
+Logs also go to `/var/log/fre-platform/`; a status snapshot is written to
+`/var/lib/fre-platform/status.json` and the latest block to `.../live.json`.
 
 ---
 
 ## 3. Configuration
 
-All settings are environment variables with the prefix `FRE_`. The service reads
-`/etc/fre-platform/fre.env` (owner `root:kali`, mode `0640`). For development you can use a
-`.env` file in the repo folder. **Both are git-ignored; never commit them.**
-`.env.example` is the template.
+Settings are environment variables prefixed `FRE_`, read from
+`/etc/fre-platform/fre.env` (root-owned, `0640`) for the service, or a local `.env`
+in development. **Both are git-ignored — never commit them.** `.env.example` is the
+template.
 
 ### MongoDB Atlas
 
-1. In Atlas → *Database Access*, create a **new** database user (the old credentials were
-   leaked and must be considered compromised – delete/rotate that user).
-   Give it **readWrite on `fre_dataset`** only.
-2. In Atlas → *Network Access*, allow the Pi's public IP.
-3. Put the connection string in the env file:
+Create a database user with **readWrite on `fre_dataset`** only, allow the Pi's IP
+in Atlas *Network Access*, then set either a full URI **or** the three parts:
 
-```bash
-sudo nano /etc/fre-platform/fre.env
-```
 ```ini
 FRE_MONGODB_URI=mongodb+srv://<user>:<password>@<cluster-host>/?retryWrites=true&w=majority
+# ── or ──
+FRE_MONGODB_USERNAME=<user>
+FRE_MONGODB_PASSWORD=<password>
+FRE_MONGODB_HOST=cluster0.xxxxx.mongodb.net
 FRE_MONGODB_DB=fre_dataset
 ```
-4. `FRE_ENV_FILE=/etc/fre-platform/fre.env .venv/bin/fre-platform db-check` must print `"ok": true`,
-   then `sudo systemctl restart fre-collector`.
 
-If the URI is not set, the collector keeps running and stores everything in the local buffer;
-it is uploaded automatically once the URI is configured.
+`fre-platform db-check` must print `"ok": true`. If the URI is unset, the collector
+keeps running and buffers locally until it is configured.
 
-### Atlas free tier (M0, 512 MB)
+**Free tier (M0, 512 MB).** Defaults target ~10 MB/day (≈ 50 days). Above
+`FRE_ATLAS_SOFT_LIMIT_PCT` (85 %) of `FRE_ATLAS_QUOTA_MB` the uploader keeps bulk
+data (spectra/observations) local and uploads only telegrams and metadata.
 
-The defaults are sized for the free tier. Measured document sizes: measurement ≈ 1.2 KB,
-raw spectrum ≈ 2–4 KB. With 4 channels:
-
-| Setting | Data per day | 512 MB lasts |
-|---|---|---|
-| defaults (measurements every 60 s, raw every 10 min) | ≈ 10 MB incl. indexes | ≈ 50 days |
-| measurements every 5 s, raw every 10 s (high resolution) | ≈ 120 MB | ≈ 4 days |
-
-Detections (alerts) are always stored in full. Every 10 minutes the uploader checks the
-database size (`dbStats`, data + indexes). Above `FRE_ATLAS_SOFT_LIMIT_PCT` (85 %) of
-`FRE_ATLAS_QUOTA_MB` it uploads **only detections and metadata** and keeps measurements/raw
-spectra in the local buffer; `watch` then shows `QUOTA: alerts only`. To free space, export
-old data (`fre-platform export ...`) and delete it in Atlas, or bump `FRE_DATASET_VERSION`
-and drop old versions. The free tier is also throughput-limited, so keep `FRE_BATCH_SIZE`
-around 100.
-
-### Main settings
+### Key settings
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `FRE_MONGODB_URI` | – | Atlas connection string (secret) |
+| `FRE_MONGODB_URI` / `_USERNAME`+`_PASSWORD`+`_HOST` | – | Atlas credentials (secret) |
 | `FRE_MONGODB_DB` | `fre_dataset` | database name |
 | `FRE_SOURCE` | `airspyhf` | `airspyhf`, `simulated` or `replay` |
-| `FRE_RECEIVER_MODEL` | `Airspy HF+ Discovery` | recorded in device metadata |
-| `FRE_CENTER_FREQ_HZ` | `108000` | tuning frequency |
-| `FRE_SAMPLE_RATE_HZ` | `192000` | Airspy sample rate |
-| `FRE_BLOCK_SECONDS` | `1.0` | analysis block length (0.5 – 10) |
+| `FRE_RECEIVER_MODEL` | `Airspy HF+ Discovery` | recorded in session metadata |
+| `FRE_CENTER_FREQ_HZ` / `FRE_SAMPLE_RATE_HZ` | `108000` / `192000` | tuning / sample rate |
+| `FRE_BLOCK_SECONDS` | `1.0` | analysis block length (0.5–10) |
 | `FRE_CHANNELS` | `DCF77:77500,DCF49:129100,HGA22:135600,DCF39:139000` | monitored channels `NAME:Hz` |
-| `FRE_AIRSPY_AGC` / `FRE_AIRSPY_ATTENUATION` / `FRE_AIRSPY_LNA` | `true` / `0` / `false` | receiver gain |
-| `FRE_STATION_ID` | hostname | station name in every document |
-| `FRE_DATASET_VERSION` | `2026.11-v1` | dataset version tag |
-| `FRE_EXPERIMENT_ID`, `FRE_EXPERIMENT_DESCRIPTION`, `FRE_ANTENNA`, `FRE_LOCATION_LABEL` | | experimental conditions |
-| `FRE_RAW_EVERY_N_BLOCKS` | `600` | store a raw spectrum every N blocks (always on alerts) |
-| `FRE_MEASUREMENT_EVERY_N_BLOCKS` | `60` | store channel measurements every N blocks (always on alerts) |
-| `FRE_PSD_BINS` | `128` | bins in the stored raw spectrum |
-| `FRE_ATLAS_QUOTA_MB` / `FRE_ATLAS_SOFT_LIMIT_PCT` | `512` / `85` | free-tier storage guard |
+| `FRE_DECODE_TELEGRAMS` | `true` | decode received telegrams |
+| `FRE_TELEGRAM_REQUIRE_CHECKSUM` | `true` | keep only checksum-valid frames |
+| `FRE_TIME_PLAUSIBILITY_TOLERANCE_S` | `5` | max clock offset for a plausible time telegram |
+| `FRE_OBSERVATION_EVERY_N_BLOCKS` | `60` | per-channel observation cadence |
+| `FRE_SPECTRUM_EVERY_N_BLOCKS` | `600` | band spectrum cadence |
+| `FRE_ENABLE_DETECTION` | `false` | phase-2 rule/ML detection (adds verdicts) |
 | `FRE_BATCH_SIZE` / `FRE_UPLOAD_INTERVAL_S` | `100` / `30` | upload batching |
-| `FRE_MAX_BUFFER_ROWS` | `200000` | local buffer cap (oldest raw spectra dropped first) |
-| `FRE_SAVE_IQ_EVERY_N` | `0` | also save raw IQ (`.cf32`) every N blocks, 0 = off |
-| `FRE_DATA_DIR` / `FRE_LOG_DIR` / `FRE_MODEL_PATH` | `/var/lib/fre-platform`, ... | file locations |
+| `FRE_ATLAS_QUOTA_MB` / `_SOFT_LIMIT_PCT` | `512` / `85` | free-tier guard |
+| `FRE_STATION_ID`, `FRE_DATASET_VERSION`, `FRE_EXPERIMENT_ID`, `FRE_ANTENNA`, `FRE_LOCATION_LABEL` | | metadata / experimental conditions |
 | `FRE_LOG_LEVEL` / `FRE_LOG_FORMAT` | `INFO` / `json` | logging |
 
 ---
 
-## 4. Database schema (`fre_dataset`)
+## 4. Dataset schema (`fre_dataset`)
 
-Every document has `schema_version`, `dataset_version`, `station_id`, `experiment_id`,
-`device_id`, `source`, `ts` (UTC date), `ts_ns` (exact ns timestamp) and `seq`. `_id` values
-are deterministic (`<station>|<ts_ns>|<channel>|<kind>`), so re-uploads never create
-duplicates. Collections are created with JSON-schema validators and indexes automatically.
+Four collections, created automatically with JSON-schema validators and indexes.
+Every time-series document carries `schema_version`, `dataset_version`,
+`experiment_id`, `station_id`, `ts` (UTC), `ts_ns` and `seq`. `_id`s are
+deterministic, so re-uploads never duplicate.
 
-| Collection | Content | Key indexes |
-|---|---|---|
-| `raw_observations` | block quality (clipping, DC, NTP, gaps), compressed band PSD (256 bins), band noise floor / flatness | `station_id+ts`, `dataset_version+ts` |
-| `measurements` | per channel: SNR, carrier offset, FSK levels, spectral lines, activity, ...; `detection` summary (verdict, signal_state, rules, anomaly score, predicted class); `label` (ground truth for simulations) | `station_id+channel+ts`, `dataset_version+label`, `detection.verdict+ts` |
-| `detections` | non-normal events: rule hits, ML anomaly/classification, recommended mitigations | `ts`, `verdict+ts`, `rule_hits.code` |
-| `devices` | receiver metadata (model, serial, firmware), host, software version | `station_id` |
-| `experiments` | experimental conditions (antenna, location, gain, channels, receive-only declaration) | `station_id+started_at` |
-| `datasets` | dataset version description, feature names, sampling settings, labels | `created_at` |
-| `models` | trained model metadata and evaluation reports (`train --register`) | `metadata.trained_at` |
-| `healthchecks` | temporary `db-check` documents (TTL 24 h) | TTL |
+### `sessions` — reproducibility metadata (one per run)
+`device` (model, serial, firmware, receive-only), `host`, `config` (antenna,
+location, frequency, sample rate, channels, gain, sampling cadences, scenario),
+`feature_names`, `telegram_signal` spec, `authorization` (receive-only).
 
-Verdicts: `normal`, `suspicious` (warning rule or ML anomaly), `anomalous` (critical rule).
-`signal_state`: `present`, `lost` (carrier was there and disappeared), `absent` (never received).
+### `observations` — per-channel feature time-series (ML-ready)
+`channel`, `features` (SNR, carrier offset, FSK mark/space/centre levels, spectral
+lines, activity, symbol rate, envelope stats…), `signal_state`
+(`present`/`lost`/`absent`), compact `quality`, `label` (ground truth in simulation).
+Indexed by `dataset_version+channel+ts`, `signal_state+ts`.
 
-Detection rules: `WIDEBAND_JAMMING`, `NARROWBAND_INTERFERENCE`, `MULTIPLE_EMITTERS`,
-`FREQ_OFFSET`, `CARRIER_LOSS`, `TELEGRAM_FLOOD`, `POWER_JUMP`, `ADC_CLIPPING`, plus info codes
-`SIGNAL_ABSENT`, `DATA_GAP`, `TIMESTAMP_REANCHORED`. Mitigations are advisory, receiver-side
-actions only (hold last valid state, quarantine telegrams, cross-check transmitters, rate-limit,
-notify operator...).
+### `spectra` — band spectrum + capture quality
+`center_freq_hz`, `sample_rate_hz`, `psd` (compact band PSD), `band` (noise floor,
+flatness, power), `quality` (clipping, DC, NTP, gaps).
+
+### `telegrams` — decoded received signals + authenticity ⭐
+`channel`, `kind` (`time`/`command`/`unknown`), `protocol`, `control`,
+`evu_address`, `checksum_ok`, `length`, `raw_hex`, `payload_hex`,
+`time` (decoded date/time for broadcasts), and **`integrity`**:
+
+| `integrity` field | meaning |
+|---|---|
+| `checksum_ok` | frame integrity (a modified frame usually fails) |
+| `clock_offset_s` | decoded time − receiver NTP clock (time telegrams) |
+| `time_plausible` | offset within tolerance and clock trusted |
+| `signal` | received fingerprint: SNR, power, carrier offset, noise floor |
+| `assessment` | `authentic_candidate` / `implausible` / `integrity_fail` / `unverified` |
+
+Query authentic vs suspected-spoofed telegrams directly, e.g.
+`db.telegrams.find({"integrity.assessment": "implausible"})`.
+
+**Telegram signal** (public spec): FSK, 170 Hz shift, 200 Bd, 8E1; DIN 19244 /
+FT1.2 variable frame `68 L L 68 C A … CS 16`, checksum = sum(C…payload) mod 256.
 
 ---
 
 ## 5. Reliability
 
-* Every document is first written to `/var/lib/fre-platform/buffer.sqlite3` (WAL, fsync).
-  Rows are deleted only after Atlas acknowledged them.
-* Network/Atlas outages: uploads retry with exponential backoff (up to 5 min); nothing is lost.
-* Duplicates are prevented locally (primary key) and in Atlas (deterministic `_id` + upsert).
-* Documents rejected by schema validation go to a `dead_letter` table instead of blocking.
-* Receiver unplugged / `airspyhf_rx` crashes: restarted automatically; dropped blocks counted.
-* Timestamps: wall-clock anchor + sample count (sample-accurate), re-anchored if samples are lost.
-* systemd: `Restart=always`, starts after network and time sync, enabled at boot.
+* Every document is written to `/var/lib/fre-platform/buffer.sqlite3` (WAL, fsync)
+  before any network I/O; rows are deleted only after Atlas acknowledges them.
+* Outages → exponential backoff; nothing lost; duplicates prevented locally
+  (primary key) and in Atlas (deterministic `_id` + upsert).
+* Telegram framing buffers across blocks, so a frame split over a block boundary is
+  still recovered; the UART demod is edge-triggered (robust to filter group delay).
+* Receiver unplug / `airspyhf_rx` crash → auto-restart; dropped blocks counted.
+* systemd: `Restart=always`, starts after network + time sync, enabled at boot.
 
 ---
 
 ## 6. Testing
 
 ```bash
-cd ~/Desktop/FRE-Detection-Mitigation
-.venv/bin/python -m pytest -q                                        # full suite (~3.5 min on a Pi 4)
+.venv/bin/python -m pytest -q                                   # full suite (~6 min on a Pi 4)
 sudo systemctl stop fre-collector
-FRE_TEST_HARDWARE=1 .venv/bin/python -m pytest -q -m hardware        # real Airspy capture
-sudo systemctl start fre-collector
+FRE_TEST_HARDWARE=1 .venv/bin/python -m pytest -q -m hardware   # real Airspy capture
 FRE_RUN_ATLAS_TESTS=1 FRE_ENV_FILE=/etc/fre-platform/fre.env \
-  .venv/bin/python -m pytest -q -m atlas                             # real Atlas (uses fre_dataset_test, dropped afterwards)
+  .venv/bin/python -m pytest -q -m atlas                        # real Atlas (uses fre_dataset_test, dropped after)
 ```
 
-Tests cover configuration, secret redaction, sources, DSP features, rule & ML detection,
-mitigation simulation, the SQLite buffer, MongoDB store (mongomock), offline buffering and
-recovery without duplicates, the end-to-end pipeline, and a scan that fails if secrets are
-committed.
+Coverage includes config/secret-redaction, sources, DSP features, the FSK
+demodulator and DIN 19244 decoder (verified against the published telegram
+examples), authenticity assessment, offline buffering/recovery without duplicates,
+the end-to-end pipeline, authentic-vs-spoofed telegram labelling, and a scan that
+fails if a credential is ever committed.
 
 ---
 
-## 7. Maintenance
+## 7. Maintenance & troubleshooting
 
 ```bash
-# update code and redeploy
-cd ~/Desktop/FRE-Detection-Mitigation && git pull && sudo deploy/install.sh
-
-# retrain models (e.g. after collecting labelled field data)
-FRE_ENV_FILE=/etc/fre-platform/fre.env .venv/bin/fre-platform train --from-db --register
-sudo systemctl restart fre-collector
+cd ~/Desktop/FRE-Detection-Mitigation && git pull && sudo deploy/install.sh   # update
 ```
-
-* Buffer growing (`buffer-status` → `rows` high, `uploader.online=false`): check Internet,
-  Atlas network access list and `db-check`.
-* `dead_letter` > 0: documents failed validation; inspect with
-  `sqlite3 /var/lib/fre-platform/buffer.sqlite3 'select collection,id,error from dead_letter limit 5'`.
-* Bump `FRE_DATASET_VERSION` when experiment setup or processing changes.
-
-## 8. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| All channels `signal_state: absent`, SNR < 0 | No antenna signal: connect an antenna suitable for ~130 kHz long wave to the Airspy HF+ Discovery antenna input; try `FRE_AIRSPY_LNA=true` |
-| `ADC_CLIPPING` | raise `FRE_AIRSPY_ATTENUATION` or turn the LNA off |
-| `airspyhf_rx` "device busy" | another program (or a manual `collect`) has the receiver open |
-| `db-check` DNS/timeout errors | no Internet, or the Pi's IP is not in the Atlas access list |
-| `configuration error` in the journal | fix the value named in the message in `/etc/fre-platform/fre.env` |
+| Channels `signal_state: absent`, SNR < 0, no telegrams | No antenna signal: connect an LF antenna (~130 kHz) to the Airspy; try `FRE_AIRSPY_LNA=true` |
+| `db-check` TLS "internal error" / timeout | the Pi's public IP is not in Atlas *Network Access* (it can change on DHCP) |
+| Buffer growing, `uploader.online=false` | check internet / Atlas access list / `db-check` |
+| `ADC_CLIPPING` | raise `FRE_AIRSPY_ATTENUATION` or disable the LNA |
+| `airspyhf_rx` “device busy” | another program (or a manual `collect`) holds the receiver |
 
-## 9. Security
+Bump `FRE_DATASET_VERSION` when the setup or processing changes.
 
-* MongoDB credentials previously committed to this repository were removed from the `main`
-  history. Because the repository is public and GitHub can still serve the old commit by its
-  SHA, those credentials must be treated as **exposed**. Rotating the database user's password
-  is strongly recommended. Until it is rotated, at minimum: restrict Atlas *Network Access* to
-  the Pi's IP (no `0.0.0.0/0`), give the user `readWrite` on `fre_dataset` only, and ask GitHub
-  Support to purge the cached commit.
-* Secrets only live in `/etc/fre-platform/fre.env` (root-owned, 0640) or a local `.env`;
-  `.gitignore` blocks `.env`, `*.env` and `*credentials*`; a test fails if a credential-bearing
-  URI is ever committed.
-* Passwords are redacted from all logs and from `show-config`.
-* The service runs as an unprivileged user with systemd sandboxing.
+---
+
+## 8. Security
+
+* MongoDB credentials once committed to this repo were removed from `main` history;
+  the repo is public and the old commit may still be served by SHA, so treat them as
+  **exposed** — rotating the password is recommended, and the Atlas IP allowlist is
+  the main protection meanwhile (never `0.0.0.0/0`).
+* Secrets live only in `/etc/fre-platform/fre.env` or a local `.env`; `.gitignore`
+  blocks `.env`, `*.env`, `*credentials*`; a test fails if a credential URI is committed.
+* Passwords are redacted from all logs and `show-config`. The service runs
+  unprivileged under systemd sandboxing.
 
 ## Project layout
 
 ```
 src/fre_platform/
-  config.py            settings from FRE_* env vars, validation, redaction
+  config.py            settings, validation, secret redaction
   logging_setup.py     JSON logging with secret redaction
-  sources/             airspyhf.py (Airspy HF+ Discovery), simulated.py, replay.py
-  dsp/features.py      quality checks, PSD, per-channel features
-  detection/           rules.py (baseline rules), ml.py (IsolationForest + RandomForest)
-  mitigation/          advisor.py (playbook), simulator.py (strategy evaluation)
-  storage/             buffer.py (SQLite outbox), mongo.py (Atlas), uploader.py
-  pipeline.py          analysis + document building + collection loop
-  cli.py               fre-platform command
+  sources/             airspyhf.py, simulated.py (incl. telegram injection), replay.py
+  dsp/                 features.py, demod.py (receive-only FSK 8E1 demodulator)
+  protocol/            framing.py (DIN 19244), telegram.py (decode + authenticity), synth.py (test signals)
+  detection/, mitigation/   phase-2 rule/ML detection + mitigation research
+  storage/             buffer.py (SQLite outbox), mongo.py (Atlas schema), uploader.py
+  pipeline.py          acquisition -> analysis -> documents -> collection loop
+  cli.py               the fre-platform command
 deploy/                fre-collector.service, install.sh
 tests/                 pytest suite
 ```

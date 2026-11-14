@@ -136,6 +136,10 @@ class Settings:
     # --- telegram decoding (receive-only) ---
     decode_telegrams: bool = True
     telegram_require_checksum: bool = True
+    # Authenticity analysis: a broadcast time telegram whose decoded time differs
+    # from the receiver's NTP-synced clock by more than this is implausible
+    # (possible replay/spoof - the plaintext time telegram has no integrity).
+    time_plausibility_tolerance_s: float = 5.0
 
     # --- detection / ML (phase 2; off while building the research dataset) ---
     enable_detection: bool = False

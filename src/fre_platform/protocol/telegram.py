@@ -110,3 +110,44 @@ def classify(frame: Frame) -> Telegram:
 def decode_bytes(data: bytes, require_checksum: bool = True) -> list[Telegram]:
     from .framing import parse_frames
     return [classify(f) for f in parse_frames(data, require_checksum=require_checksum)]
+
+
+def assess_authenticity(telegram: dict, received_ts: datetime, signal: dict | None = None,
+                        ntp_synced: bool | None = None, tolerance_s: float = 5.0) -> dict:
+    """Deterministic authenticity signals for a decoded telegram (no ML).
+
+    These features let a researcher - and later a model - separate authentic
+    broadcasts from replayed / spoofed / modified ones:
+
+    * ``checksum_ok``   - frame integrity (a modified frame usually fails this)
+    * ``clock_offset_s``- for time telegrams: decoded time minus the receiver's
+      NTP clock; a large magnitude indicates replay or a spoofed timestamp
+      (BlinkenCity Attack 1 - the time telegram has no integrity/replay protection)
+    * ``time_plausible``- offset within tolerance and the receiver clock trusted
+    * ``signal``        - received-signal fingerprint (SNR, power, carrier offset);
+      a local/rogue emitter overpowering the distant 100 kW tower looks different
+    * ``assessment``    - compact verdict: authentic_candidate / implausible /
+      integrity_fail / unverified
+    """
+    out: dict = {"checksum_ok": bool(telegram.get("checksum_ok")), "ntp_synced": ntp_synced}
+    if signal:
+        out["signal"] = {k: signal.get(k) for k in ("snr_db", "power_dbfs", "carrier_offset_hz", "noise_floor_db")}
+    time = telegram.get("time") or {}
+    iso = time.get("iso")
+    if iso:
+        try:
+            decoded = datetime.fromisoformat(iso)
+            offset = (decoded - received_ts).total_seconds()
+            out["clock_offset_s"] = round(offset, 3)
+            out["time_plausible"] = bool(abs(offset) <= tolerance_s and ntp_synced is not False)
+        except ValueError:
+            pass
+    if not out["checksum_ok"]:
+        out["assessment"] = "integrity_fail"
+    elif out.get("time_plausible") is False:
+        out["assessment"] = "implausible"
+    elif out.get("time_plausible") is True:
+        out["assessment"] = "authentic_candidate"
+    else:
+        out["assessment"] = "unverified"   # e.g. command telegram: no decodable integrity reference
+    return out

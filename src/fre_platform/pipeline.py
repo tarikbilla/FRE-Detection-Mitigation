@@ -17,6 +17,7 @@ from .detection.ml import FreModels
 from .detection.rules import RuleEngine, RuleHit, verdict_from
 from .dsp.features import BAND_FEATURES, CHANNEL_FEATURES, FeatureExtractor, assess_quality
 from .mitigation.advisor import recommend
+from .protocol.telegram import assess_authenticity
 from .sources.base import IQBlock, IQSource, ns_to_datetime
 from .storage.buffer import LocalBuffer
 
@@ -95,6 +96,10 @@ class BlockAnalyzer:
             baseband = self.extractor.baseband(block, ch)
             feats = self.extractor.channel(block, ch, band, baseband=baseband)
             telegrams = self._decode_telegrams(ch.name, baseband)
+            for tg in telegrams:
+                tg["integrity"] = assess_authenticity(
+                    tg, block.ts, signal=feats, ntp_synced=quality.get("ntp_synced"),
+                    tolerance_s=self.cfg.time_plausibility_tolerance_s)
             established = self.rules.channel_established(ch.name) if self.detect else feats["snr_db"] >= self.cfg.snr_min_db
             signal_state = "present" if feats["snr_db"] >= self.cfg.snr_min_db else (
                 "lost" if established else "absent")
@@ -142,6 +147,7 @@ class Collector:
         self.device_info = info
         self.stats = {"blocks": 0, "invalid_blocks": 0, "errors": 0, "timeouts": 0, "docs_buffered": 0,
                       "observations": 0, "spectra": 0, "telegrams": 0, "telegrams_time": 0,
+                      "telegrams_suspect": 0,
                       "verdicts": {"normal": 0, "suspicious": 0, "anomalous": 0},
                       "started_at": datetime.now(timezone.utc).isoformat()}
         self._consecutive_errors = 0
@@ -170,10 +176,13 @@ class Collector:
                 "rules": [h["code"] for h in c["rule_hits"]],
                 "ml": (c["ml"] or {}).get("label"),
                 "telegrams": [{"kind": t["kind"], "evu": t.get("evu_address"), "checksum_ok": t["checksum_ok"],
-                               "time": (t.get("time") or {}).get("iso"), "raw_hex": t["raw_hex"]}
+                               "time": (t.get("time") or {}).get("iso"), "raw_hex": t["raw_hex"],
+                               "assessment": t.get("integrity", {}).get("assessment"),
+                               "clock_offset_s": t.get("integrity", {}).get("clock_offset_s")}
                               for t in c["telegrams"]],
             } for c in res["channels"]],
-            "telegram_totals": {"total": self.stats["telegrams"], "time": self.stats["telegrams_time"]},
+            "telegram_totals": {"total": self.stats["telegrams"], "time": self.stats["telegrams_time"],
+                                "suspect": self.stats["telegrams_suspect"]},
             "buffer_rows": self.buffer.count(),
             "upload": None if up is None else {"online": up["online"], "uploaded": up["uploaded"],
                                                "storage_mb": up.get("storage_used_mb"),
@@ -256,7 +265,7 @@ class Collector:
                                         "ml_label": (c["ml"] or {}).get("label")}
                 docs.append(("observations", obs, "insert"))
 
-            # Decoded received telegrams (the actual signal content)
+            # Decoded received telegrams (the actual signal content) + authenticity features
             for i, tg in enumerate(c["telegrams"]):
                 docs.append(("telegrams", {
                     "_id": f"{st}|{block.ts_ns}|{c['name']}|{i}", **common,
@@ -283,8 +292,16 @@ class Collector:
                 self.stats["telegrams"] += 1
                 if tg["kind"] == "time":
                     self.stats["telegrams_time"] += 1
+                integ = tg.get("integrity", {})
+                if integ.get("assessment") in ("implausible", "integrity_fail"):
+                    self.stats["telegrams_suspect"] += 1
+                    log.warning("suspect telegram", extra={"channel": c["name"], "seq": block.seq,
+                                                           "kind": tg["kind"], "assessment": integ.get("assessment"),
+                                                           "clock_offset_s": integ.get("clock_offset_s"),
+                                                           "checksum_ok": tg["checksum_ok"]})
                 log.info("telegram received", extra={"channel": c["name"], "seq": block.seq, "kind": tg["kind"],
                                                      "evu": tg.get("evu_address"), "checksum_ok": tg["checksum_ok"],
+                                                     "assessment": integ.get("assessment"),
                                                      "decoded_time": (tg.get("time") or {}).get("iso")})
             if self.cfg.enable_detection:
                 self.stats["verdicts"][c["verdict"]] += 1
