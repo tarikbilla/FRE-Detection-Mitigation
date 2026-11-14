@@ -176,6 +176,11 @@ class RuleEngine:
                 b[k].update(f.get(k))
         return hits
 
+    def channel_established(self, name: str) -> bool:
+        """True once the channel has a learned baseline with a clearly present carrier."""
+        snr = self.baselines[name]["snr_db"]
+        return snr.ready and snr.median() > self.cfg.snr_min_db + 10
+
     def state(self) -> dict:
         return {
             "band_floor_median": self.band_baseline.median(),

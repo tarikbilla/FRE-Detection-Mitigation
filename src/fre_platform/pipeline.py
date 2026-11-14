@@ -64,21 +64,32 @@ class BlockAnalyzer:
 
         chans = []
         for ch in self.cfg.channels:
+            # established = carrier was clearly present in the baseline *before* this block
+            established = self.rules.channel_established(ch.name)
             feats = self.extractor.channel(block, ch, band)
             hits: list[RuleHit] = shared + self.rules.evaluate_channel(ch.name, feats, band_hits)
             ml_input = {**feats, "band_flatness": band["band_flatness"],
                         "band_floor_rise_db": band["band_floor_rise_db"]}
+            signal_state = "present" if feats["snr_db"] >= self.cfg.snr_min_db else (
+                "lost" if established else "absent")
             chans.append({"name": ch.name, "freq_hz": ch.freq_hz, "features": feats, "ml_input": ml_input,
-                          "hits": hits, "truth": (block.truth or {}).get(ch.name)})
+                          "hits": hits, "truth": (block.truth or {}).get(ch.name), "established": established,
+                          "signal_state": signal_state})
 
         ml_out = self.models.predict([c["ml_input"] for c in chans]) if self.models else [None] * len(chans)
         for c, ml in zip(chans, ml_out):
             ml_anom = bool(ml and ml.get("is_anomaly"))
             ml_label = ml.get("label") if ml else None
-            verdict = verdict_from(c["hits"], ml_anom or (ml_label not in (None, "normal")))
+            # The models were trained on channels with an established carrier.
+            # On a channel that never carried a signal (e.g. out of reception
+            # range) their output is recorded but must not raise an alarm;
+            # wideband jamming is still caught by the band-level rule.
+            ml_escalates = c["established"] and (ml_anom or ml_label not in (None, "normal"))
+            verdict = verdict_from(c["hits"], ml_escalates)
             codes = [h.code for h in c["hits"] if h.severity != "info"]
             c.update(rule_hits=[h.to_dict() for h in c.pop("hits")], ml=ml, verdict=verdict,
-                     mitigations=recommend(codes, ml_anom, ml_label) if verdict != "normal" else [])
+                     mitigations=recommend(codes, ml_escalates and ml_anom,
+                                           ml_label if ml_escalates else None) if verdict != "normal" else [])
         result["channels"] = chans
         return result
 
@@ -168,7 +179,8 @@ class Collector:
         for c in res["channels"]:
             keep = keep_all or block.seq % cfg.measurement_every_n_blocks == 0 or c["verdict"] != "normal"
             mid = f"{st}|{block.ts_ns}|{c['name']}|m"
-            detection = {"verdict": c["verdict"], "rule_codes": [h["code"] for h in c["rule_hits"]],
+            detection = {"verdict": c["verdict"], "signal_state": c["signal_state"],
+                         "rule_codes": [h["code"] for h in c["rule_hits"]],
                          "anomaly": c["ml"] and {k: c["ml"][k] for k in ("model", "score", "is_anomaly")},
                          "classification": c["ml"] and c["ml"].get("label") and
                          {"label": c["ml"]["label"], "probability": c["ml"]["probability"]}}

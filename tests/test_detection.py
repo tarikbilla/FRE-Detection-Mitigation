@@ -51,6 +51,29 @@ def test_attack_does_not_poison_baseline(cfg):
     assert abs(an.rules.band_baseline.median() - before) < 1.0
 
 
+class _AlwaysCarrierLoss:
+    def predict(self, rows):
+        return [{"model": "stub", "score": -0.5, "is_anomaly": True, "label": "carrier_loss", "probability": 0.9}
+                for _ in rows]
+
+
+def test_ml_does_not_alarm_on_never_received_channel(cfg):
+    from fre_platform.sources.simulated import SimulatedSource
+    an = BlockAnalyzer(cfg, models=_AlwaysCarrierLoss())
+    src = SimulatedSource(cfg, scenario="carrier_loss", seed=2)  # DCF49 silent from the very start
+    res = [an.analyze(src.read_block()) for _ in range(cfg.baseline_min_blocks + 4)]
+    dcf49 = [c for r in res for c in r["channels"] if c["name"] == "DCF49"]
+    assert all(c["signal_state"] == "absent" and c["verdict"] == "normal" for c in dcf49)
+    assert dcf49[-1]["ml"]["label"] == "carrier_loss"  # still recorded for research
+
+
+def test_ml_escalates_on_established_channel(cfg):
+    an = BlockAnalyzer(cfg, models=_AlwaysCarrierLoss())
+    src = warmed_source(cfg, an, seed=3)
+    ch = [c for c in an.analyze(src.read_block())["channels"] if c["name"] == "DCF49"][0]
+    assert ch["verdict"] == "suspicious" and ch["signal_state"] == "present"
+
+
 def test_robust_baseline():
     b = RobustBaseline(window=50, min_n=5)
     assert b.zscore(100) == 0.0  # not ready yet
