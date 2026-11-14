@@ -95,7 +95,7 @@ class UploadResult:
 
 
 class MongoStore:
-    def __init__(self, uri: str | None = None, db_name: str = "fre_research", app_name: str = "fre-platform",
+    def __init__(self, uri: str | None = None, db_name: str = "fre_dataset", app_name: str = "fre-platform",
                  timeout_ms: int = 8000, client: MongoClient | None = None):
         if client is None:
             if not uri:
