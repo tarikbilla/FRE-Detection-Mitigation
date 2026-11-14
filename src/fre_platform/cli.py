@@ -228,6 +228,81 @@ def cmd_watch(args) -> int:
         return 0
 
 
+def _service_active() -> bool:
+    """True if the systemd collector service is running (it owns the receiver)."""
+    import subprocess
+    try:
+        return subprocess.run(["systemctl", "is-active", "--quiet", "fre-collector"],
+                              stdin=subprocess.DEVNULL, timeout=5).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def cmd_run(args) -> int:
+    """Start the whole application: collector + live dashboard in one process.
+
+    If the background service already runs (it holds the receiver), attach to
+    its live view instead of starting a competing second instance.
+    """
+    import time
+    if not args.foreground and _service_active():
+        print("fre-collector service is running - showing its live view "
+              "(Ctrl+C closes the view; the service keeps collecting).", flush=True)
+        time.sleep(1.5)
+        args.interval = 0.5
+        return cmd_watch(args)
+
+    from .pipeline import Collector
+    from .sources import create_source
+    cfg = _settings(args)
+    buffer = _buffer(cfg)
+    source = create_source(cfg)
+    stop = threading.Event()
+    _install_signal_handlers(stop)
+    latest: dict = {}
+    collector = Collector(cfg, source, buffer, _uploader(cfg, buffer, not args.no_upload), _models(cfg),
+                          on_block=lambda s: latest.__setitem__("s", s))
+    failure: dict = {}
+
+    def _collect():
+        try:
+            collector.run(stop, max_blocks=args.max_blocks)
+        except Exception as exc:  # surfaced on screen below; full trace goes to the log file
+            log.exception("collector stopped with an error")
+            failure["error"] = redact_text(f"{type(exc).__name__}: {exc}")
+        finally:
+            stop.set()
+
+    worker = threading.Thread(target=_collect, name="collector", daemon=True)
+    worker.start()
+    color = sys.stdout.isatty() and not args.plain
+    last_seq = None
+    try:
+        while not stop.is_set():
+            s = latest.get("s")
+            if color:
+                panel = format_dashboard(s, color) if s else "  starting receiver ..."
+                sys.stdout.write("\033[H\033[2J" + panel + "\n")
+                sys.stdout.flush()
+            elif s and s["seq"] != last_seq:
+                last_seq = s["seq"]
+                print(format_live(s, False), flush=True)
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        stop.set()
+    print("\nstopping - finishing the current block and uploading buffered data ...", flush=True)
+    worker.join(timeout=90)
+    buffer.close()
+    if failure:
+        print(f"ERROR: {failure['error']}  (details: logs in {cfg.log_dir or Path(cfg.data_dir) / 'logs'})",
+              file=sys.stderr)
+        return 1
+    st = collector.stats
+    print(f"stopped. blocks={st['blocks']} observations={st['observations']} spectra={st['spectra']} "
+          f"telegrams={st['telegrams']} (time {st['telegrams_time']}, suspect {st['telegrams_suspect']})")
+    return 0
+
+
 def cmd_decode(args) -> int:
     """Decode telegram hex (receive-only) and show it in the paper's format."""
     from .protocol.telegram import decode_bytes, format_presentation
@@ -409,6 +484,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--live", action="store_true", help="print every received block to the console")
     s.set_defaults(func=cmd_collect)
 
+    s = sub.add_parser("run", help="start the application: collector + live dashboard (default for main.py)")
+    s.add_argument("--foreground", action="store_true",
+                   help="collect in this process even if the systemd service is running (stop the service first)")
+    s.add_argument("--no-upload", action="store_true", help="buffer locally only")
+    s.add_argument("--plain", action="store_true", help="scrolling lines instead of the full-screen dashboard")
+    s.add_argument("--max-blocks", type=int, help=argparse.SUPPRESS)
+    s.set_defaults(func=cmd_run)
+
     s = sub.add_parser("watch", help="live reception dashboard for the running collector/service")
     s.add_argument("--interval", type=float, default=0.3, help="refresh interval in seconds")
     s.add_argument("--plain", action="store_true", help="scrolling lines instead of the refreshing panel")
@@ -468,7 +551,12 @@ def main(argv: list[str] | None = None) -> int:
         setup_logging("INFO", "text")
         log.error("configuration error: %s", exc)
         return 2
-    setup_logging(args.log_level or cfg.log_level, args.log_format or cfg.log_format, cfg.log_dir)
+    # The full-screen dashboards (run/watch on a terminal) log to a file only, so
+    # log lines don't scramble the screen.
+    dashboard = args.command in ("run", "watch") and sys.stdout.isatty() and not getattr(args, "plain", False)
+    log_dir = cfg.log_dir or (Path(cfg.data_dir) / "logs" if dashboard else None)
+    setup_logging(args.log_level or cfg.log_level, args.log_format or cfg.log_format, log_dir,
+                  console=not dashboard)
     try:
         return int(args.func(args) or 0)
     except ConfigError as exc:

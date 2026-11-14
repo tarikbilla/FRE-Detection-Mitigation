@@ -96,6 +96,28 @@ def test_live_output(cfg, tmp_path):
     assert "DCF49" in text and "SNR" in text
 
 
+def test_run_command_collects_and_stops(tmp_path, monkeypatch, capsys):
+    """`main.py` / `fre-platform run` in the foreground with a simulated receiver."""
+    from fre_platform import cli
+    monkeypatch.setattr(cli, "_service_active", lambda: False)
+    for k, v in {"FRE_SOURCE": "simulated", "FRE_BLOCK_SECONDS": "0.5", "FRE_DATA_DIR": str(tmp_path),
+                 "FRE_MODEL_PATH": str(tmp_path / "m.joblib"), "FRE_SIM_SCENARIO": "normal"}.items():
+        monkeypatch.setenv(k, v)
+    rc = cli.main(["run", "--foreground", "--no-upload", "--max-blocks", "3"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "stopped. blocks=3" in out and "DCF49" in out
+
+
+def test_run_attaches_when_service_active(monkeypatch):
+    from fre_platform import cli
+    monkeypatch.setattr(cli, "_service_active", lambda: True)
+    called = {}
+    monkeypatch.setattr(cli, "cmd_watch", lambda a: called.setdefault("watch", True) and 0)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setenv("FRE_SOURCE", "simulated")
+    assert cli.main(["run"]) == 0 and called.get("watch")
+
+
 def test_sampling_reduces_volume_for_live_data(cfg, tmp_path):
     buf = LocalBuffer(tmp_path / "b.sqlite3")
     src = SimulatedSource(cfg, scenario="normal", seed=6)

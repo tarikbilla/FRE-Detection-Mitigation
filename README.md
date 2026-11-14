@@ -44,7 +44,31 @@ dataset stays clean; the platform ships the detector/ML code ready for it.
 
 ---
 
-## 1. Quick start (Raspberry Pi)
+## Run it — one command
+
+```bash
+cd ~/Desktop/FRE-Detection-Mitigation
+python3 main.py
+```
+
+That's all. `main.py` switches to the project's virtual environment, loads the settings
+file automatically, and starts the whole application: receiver → decoder → database
+upload, with a full-screen live dashboard. **Ctrl+C** stops it cleanly (it finishes the
+current block and uploads what is buffered).
+
+* If the background service (`fre-collector`) is already running, `main.py` simply
+  **shows its live view** instead of starting a second copy (only one program can use
+  the Airspy). Closing the view does not stop the service.
+* `python3 main.py --foreground` collects in the terminal instead
+  (stop the service first: `sudo systemctl stop fre-collector`).
+* `python3 main.py --plain` uses scrolling lines instead of the full-screen panel.
+* Every other command works through it too, for example
+  `python3 main.py db-check`, `python3 main.py buffer-status`,
+  `python3 main.py decode 68 0a 0a 68 ...`, `python3 main.py --help`.
+
+In dashboard mode, logs go to `/var/log/fre-platform/fre-platform.log`.
+
+## 1. Installation (Raspberry Pi, once)
 
 ```bash
 git clone git@github.com:tarikbilla/FRE-Detection-Mitigation.git ~/Desktop/FRE-Detection-Mitigation

@@ -41,7 +41,10 @@ class RedactingTextFormatter(logging.Formatter):
         return redact_text(super().format(record))
 
 
-def setup_logging(level: str = "INFO", fmt: str = "json", log_dir: Path | None = None) -> None:
+def setup_logging(level: str = "INFO", fmt: str = "json", log_dir: Path | None = None,
+                  console: bool = True) -> None:
+    """Configure logging. ``console=False`` (used by the live dashboard) sends
+    records only to the rotating log file so they do not scramble the screen."""
     root = logging.getLogger()
     for h in list(root.handlers):
         root.removeHandler(h)
@@ -53,9 +56,10 @@ def setup_logging(level: str = "INFO", fmt: str = "json", log_dir: Path | None =
     else:
         formatter = RedactingTextFormatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
 
-    stream = logging.StreamHandler(sys.stderr)
-    stream.setFormatter(formatter)
-    root.addHandler(stream)
+    if console:
+        stream = logging.StreamHandler(sys.stderr)
+        stream.setFormatter(formatter)
+        root.addHandler(stream)
 
     if log_dir:
         log_dir = Path(log_dir)
