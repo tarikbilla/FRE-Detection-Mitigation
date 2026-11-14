@@ -38,6 +38,19 @@ def test_end_to_end_mixed_scenario(cfg, tmp_path, mongomock_store):
     assert status["collector"]["blocks"] == 40 and status["buffer"]["rows"] == 0
 
 
+def test_live_output(cfg, tmp_path):
+    from fre_platform.cli import format_live
+    seen = []
+    buf = LocalBuffer(tmp_path / "b.sqlite3")
+    col = Collector(cfg, SimulatedSource(cfg, seed=2), buf, on_block=seen.append)
+    col.run(max_blocks=3)
+    assert [s["seq"] for s in seen] == [0, 1, 2]
+    live = json.loads((cfg.data_dir / "live.json").read_text())
+    assert live["seq"] == 2 and len(live["channels"]) == len(cfg.channels)
+    text = format_live(live)
+    assert text.count("\n") == len(cfg.channels) and "DCF49" in text and "SNR" in text
+
+
 def test_sampling_reduces_volume_for_live_data(cfg, tmp_path):
     buf = LocalBuffer(tmp_path / "b.sqlite3")
     src = SimulatedSource(cfg, scenario="normal", seed=6)

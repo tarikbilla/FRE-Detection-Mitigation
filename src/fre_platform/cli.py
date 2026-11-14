@@ -55,6 +55,46 @@ def _uploader(cfg: Settings, buffer, enabled: bool = True):
     return Uploader(buffer, lambda: MongoStore.from_config(cfg), cfg)
 
 
+_COLORS = {"normal": "\033[32m", "suspicious": "\033[33m", "anomalous": "\033[31;1m"}
+_RESET = "\033[0m"
+
+
+def _num(v, fmt: str) -> str:
+    return format(v, fmt) if isinstance(v, (int, float)) else "-"
+
+
+def format_live(s: dict, color: bool = False) -> str:
+    """Render one live block summary as console lines (one per channel)."""
+    t = s["ts"][11:23]
+    head = (f"{t}  #{s['seq']:<6} band floor {_num(s['band_floor_db'], '7.1f')} dBFS/Hz  "
+            f"power {_num(s['band_power_dbfs'], '6.1f')} dBFS")
+    if not s["valid"]:
+        head += "  INVALID: " + "; ".join(s["reasons"])
+    if s["band_rules"]:
+        head += "  band: " + ",".join(s["band_rules"])
+    up = s.get("upload")
+    head += f"  buffer {s['buffer_rows']}" + ("" if up is None else
+                                              f"  atlas {'online' if up['online'] else 'offline'} ({up['uploaded']} up)")
+    lines = [head]
+    for c in s["channels"]:
+        v = c["verdict"]
+        verdict = f"{_COLORS[v]}{v:<10}{_RESET}" if color else f"{v:<10}"
+        extra = ",".join(c["rules"]) + (f" ml={c['ml']}" if c.get("ml") else "")
+        lines.append(f"    {c['name']:<6} {c['freq_hz'] / 1e3:7.1f} kHz  P {_num(c['power_dbfs'], '6.1f')} dBFS  "
+                     f"SNR {_num(c['snr_db'], '6.1f')} dB  off {_num(c['offset_hz'], '+6.1f')} Hz  "
+                     f"FSK {_num(c['fsk_activity'], '4.2f')}  lines {c['lines']:<2}  {verdict} "
+                     f"{c['signal_state']:<7} {extra}".rstrip())
+    return "\n".join(lines)
+
+
+def _printer():
+    color = sys.stdout.isatty()
+
+    def show(summary: dict) -> None:
+        print(format_live(summary, color), flush=True)
+    return show
+
+
 def _install_signal_handlers(stop: threading.Event) -> None:
     def handler(signum, _frame):
         log.info("signal received, stopping", extra={"signal": signum})
@@ -73,13 +113,41 @@ def cmd_collect(args) -> int:
     source = create_source(cfg)
     stop = threading.Event()
     _install_signal_handlers(stop)
-    collector = Collector(cfg, source, buffer, _uploader(cfg, buffer, not args.no_upload), _models(cfg))
+    collector = Collector(cfg, source, buffer, _uploader(cfg, buffer, not args.no_upload), _models(cfg),
+                          on_block=_printer() if args.live else None)
     try:
+        # runs until Ctrl+C / SIGTERM unless --max-blocks is given
         stats = collector.run(stop, max_blocks=args.max_blocks)
     finally:
         buffer.close()
     log.info("collection finished", extra={"stats": stats})
     return 0
+
+
+def cmd_watch(args) -> int:
+    """Follow the live output of the running collector (e.g. the systemd service)."""
+    import time
+    cfg = _settings(args)
+    path = Path(cfg.data_dir) / "live.json"
+    show = _printer()
+    last_seq, last_change = None, time.monotonic()
+    print(f"watching {path} (Ctrl+C to stop)", flush=True)
+    try:
+        while True:
+            try:
+                s = json.loads(path.read_text())
+            except (OSError, ValueError):
+                s = None
+            if s and (s["seq"], s["ts"]) != last_seq:
+                last_seq, last_change = (s["seq"], s["ts"]), time.monotonic()
+                show(s)
+            elif time.monotonic() - last_change > max(10.0, 5 * cfg.block_seconds):
+                print(f"... no new data for {time.monotonic() - last_change:.0f} s "
+                      f"(is the collector running? systemctl status fre-collector)", flush=True)
+                last_change = time.monotonic()
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        return 0
 
 
 def cmd_simulate(args) -> int:
@@ -248,7 +316,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--source", choices=("airspyhf", "simulated", "replay"))
     s.add_argument("--max-blocks", type=int)
     s.add_argument("--no-upload", action="store_true", help="buffer locally only")
+    s.add_argument("--live", action="store_true", help="print every received block to the console")
     s.set_defaults(func=cmd_collect)
+
+    s = sub.add_parser("watch", help="show live data from the running collector/service")
+    s.add_argument("--interval", type=float, default=0.3, help="poll interval in seconds")
+    s.set_defaults(func=cmd_watch)
 
     s = sub.add_parser("simulate", help="run a synthetic scenario through the full pipeline")
     s.add_argument("--scenario", default="mixed")

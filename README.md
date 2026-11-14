@@ -55,6 +55,36 @@ source .venv/bin/activate          # or prefix commands with .venv/bin/
 export FRE_ENV_FILE=/etc/fre-platform/fre.env   # use the service's settings
 ```
 
+### Live view of the received FRE data
+
+The collector runs **forever** (until Ctrl+C / `systemctl stop`) and prints every received
+block when started with `--live`:
+
+```bash
+# A) watch the background service live (the service keeps running and uploading)
+FRE_ENV_FILE=/etc/fre-platform/fre.env .venv/bin/fre-platform watch
+
+# B) or run the collector yourself in the foreground with live output
+sudo systemctl stop fre-collector
+FRE_ENV_FILE=/etc/fre-platform/fre.env .venv/bin/fre-platform --log-level WARNING collect --live
+```
+
+Example output (one block per second, one line per channel):
+
+```
+01:23:45.120  #1234   band floor  -136.5 dBFS/Hz  power  -83.2 dBFS  buffer 85  atlas online (5120 up)
+    DCF77     77.5 kHz  P  -62.4 dBFS  SNR   38.2 dB  off   +0.3 Hz  FSK 0.00  lines 0  normal     present
+    DCF49    129.1 kHz  P  -70.1 dBFS  SNR   31.5 dB  off   -1.8 Hz  FSK 0.21  lines 0  normal     present
+    HGA22    135.6 kHz  P  -71.0 dBFS  SNR   30.2 dB  off   +2.4 Hz  FSK 0.00  lines 0  normal     present
+    DCF39    139.0 kHz  P  -69.8 dBFS  SNR   33.0 dB  off  +41.0 Hz  FSK 0.18  lines 0  suspicious present FREQ_OFFSET
+```
+
+`P` = channel power, `SNR` = signal-to-noise ratio, `off` = carrier frequency offset,
+`FSK` = fraction of the block with FSK telegram activity, `lines` = unexpected spectral lines,
+then the verdict (`normal` / `suspicious` / `anomalous`), the signal state and any rule codes.
+
+### Other commands
+
 | What you want | Command |
 |---|---|
 | Check the effective settings (password hidden) | `fre-platform show-config` |

@@ -96,7 +96,8 @@ class BlockAnalyzer:
 
 class Collector:
     def __init__(self, cfg: Settings, source: IQSource, buffer: LocalBuffer, uploader=None,
-                 models: FreModels | None = None, keep_all_measurements: bool | None = None):
+                 models: FreModels | None = None, keep_all_measurements: bool | None = None,
+                 on_block=None):
         self.cfg = cfg
         self.source = source
         self.buffer = buffer
@@ -114,7 +115,40 @@ class Collector:
         self._consecutive_errors = 0
         self._last_heartbeat = time.monotonic()
         self.status_path = Path(cfg.data_dir) / "status.json"
+        self.live_path = Path(cfg.data_dir) / "live.json"
+        self.on_block = on_block  # optional callback(summary) for console output
         (Path(cfg.data_dir) / "iq").mkdir(parents=True, exist_ok=True)
+
+    # ---------------------------------------------------------------- live
+    def live_summary(self, block: IQBlock, res: dict) -> dict:
+        """Compact per-block summary for the console / ``fre-platform watch``."""
+        up = self.uploader.stats if self.uploader else None
+        return {
+            "ts": block.ts.isoformat(timespec="milliseconds"), "seq": block.seq, "source": block.source,
+            "valid": res["quality"]["valid"], "reasons": res["quality"]["reasons"],
+            "band_floor_db": res["band"].get("band_noise_floor_db"),
+            "band_power_dbfs": res["band"].get("band_total_power_dbfs"),
+            "band_rules": [h["code"] for h in res["band_hits"]],
+            "channels": [{
+                "name": c["name"], "freq_hz": c["freq_hz"], "verdict": c["verdict"],
+                "signal_state": c["signal_state"],
+                "power_dbfs": c["features"]["power_dbfs"], "snr_db": c["features"]["snr_db"],
+                "offset_hz": c["features"]["carrier_offset_hz"], "fsk_activity": c["features"]["fsk_activity"],
+                "lines": c["features"]["unexpected_peaks"],
+                "rules": [h["code"] for h in c["rule_hits"]],
+                "ml": (c["ml"] or {}).get("label"),
+            } for c in res["channels"]],
+            "buffer_rows": self.buffer.count(),
+            "upload": None if up is None else {"online": up["online"], "uploaded": up["uploaded"]},
+        }
+
+    def _write_live(self, summary: dict) -> None:
+        try:
+            tmp = self.live_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(summary, default=str))
+            tmp.replace(self.live_path)
+        except OSError:  # live view is best-effort; never break collection
+            log.debug("could not write live.json", exc_info=True)
 
     # ------------------------------------------------------------ metadata
     def _common(self, block: IQBlock) -> dict:
@@ -222,6 +256,10 @@ class Collector:
                                                        "ml": c["ml"]})
         if self.uploader is not None and self.buffer.count() >= self.cfg.batch_size:
             self.uploader.trigger()
+        summary = self.live_summary(block, res)
+        self._write_live(summary)
+        if self.on_block is not None:
+            self.on_block(summary)
         return res
 
     def status(self) -> dict:
