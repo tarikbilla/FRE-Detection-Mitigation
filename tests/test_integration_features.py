@@ -257,10 +257,27 @@ def test_dashboard_renders_all_four_panels(icfg, tmp_path):
     console = Console(record=True, width=220, height=60, color_system=None)
     console.print(dashboard.render(icfg, {}))
     text = console.export_text()
-    for title in ("[1] RPi // SDR LIVE", "[2] FRE // ESP32 + IR LIVE", "[3] MongoDB // LIVE COUNTS",
-                  "[4] BACKUPS & CONFIG"):
+    for title in ("1 · SDR & RASPBERRY PI", "2 · FRE RECEIVER", "3 · MONGODB DATABASE", "4 · BACKUPS & CONFIG"):
         assert title in text
-    assert "60 %" in text and "fre_dataset_v2" in text
+    assert "K2 · 60 %" in text and "requested feed-in 60 %" in text and "fre_dataset_v2" in text
+    assert "ESP32" in text and "MONGO" in text          # health chips in the header
+
+
+def test_health_chips_and_alerts(icfg, tmp_path):
+    from fre_platform import dashboard
+    d = tmp_path / "data"
+    d.mkdir(exist_ok=True)
+    now = datetime.now(timezone.utc).isoformat()
+    (d / "relay_live.json").write_text(json.dumps({"connected": False, "positions": {}}))
+    (d / "ir_live.json").write_text(json.dumps({"head_present": True, "probes": 5, "responses": 0}))
+    (d / "platform.json").write_text(json.dumps({"updated_at": now, "subsystems": {
+        "uploader": {"enabled": True, "online": True}, "backup": {}}}))
+    states = {s["name"]: s for s in dashboard.health(icfg)}
+    assert states["ESP32"]["level"] == "bad" and states["SDR"]["level"] == "bad"     # no live.json
+    assert states["IR"]["level"] == "info"            # silent optical port is not an alarm
+    assert states["MONGO"]["level"] == "ok" and "CORE" not in states
+    alert = dashboard.alerts(list(states.values())).plain
+    assert "ESP32 disconnected" in alert and "IR" not in alert
 
 
 def test_relay_seed_restores_state_and_counts_whole_day(icfg):
