@@ -289,8 +289,9 @@ def panel_mongo(stats: dict | None, plat: dict | None, prev: dict) -> Panel:
         rows.append(Text(f"  {up['last_error'][:90]}", style=BAD))
     if stats:
         used, quota = stats.get("cluster_used_mb", 0), stats.get("quota_mb", 512)
-        rows.append(_kv(("cluster", _bar(used / quota if quota else 0, 20, 0.7, stats.get("soft_limit_pct", 85) / 100)),
-                        ("", f"{used:.0f} / {quota:.0f} MB"),
+        rows.append(_kv(("quota", _bar(used / quota if quota else 0, 20, 0.7, stats.get("soft_limit_pct", 85) / 100)),
+                        ("", f"{used:.0f} / {quota:.0f} MB"
+                             + (f" (incl. {stats.get('reserved_mb'):.0f} reserved)" if stats.get("reserved_mb") else "")),
                         ("", Text("QUOTA GUARD: bulk data held back", style=BAD) if up.get("quota_restricted") else "")))
         pending = buf.get("by_collection") or {}
         dbs = stats.get("databases") or {}
@@ -303,7 +304,7 @@ def panel_mongo(stats: dict | None, plat: dict | None, prev: dict) -> Panel:
                                 ("over", f"{mins:.0f} min")))
         for name in sorted(dbs, key=lambda n: (not dbs[n].get("active"), n)):
             d = dbs[name]
-            tag = Text(" ◄ ACTIVE", style=HI) if d.get("active") else Text(" legacy (frozen)", style=DIM)
+            tag = Text(" ◄ the only database used", style=HI) if d.get("active") else Text("", style=DIM)
             rows.append(Text(f"▌{name}", style="bold bright_green") + tag
                         + Text(f"   {d['documents']:,} docs  {d['data_mb'] + d['index_mb']:.1f} MB", style=G))
             t = Table(box=None, show_header=d.get("active", False), header_style=DIM, padding=(0, 1),

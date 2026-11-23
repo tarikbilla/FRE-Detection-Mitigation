@@ -28,7 +28,6 @@ from .config import Settings, redact_text
 
 log = logging.getLogger(__name__)
 
-SYSTEM_DBS = ("admin", "local", "config")
 
 
 def write_json(path: Path, obj: dict) -> None:
@@ -41,7 +40,7 @@ def write_json(path: Path, obj: dict) -> None:
 
 
 class StatsPublisher(threading.Thread):
-    """Publishes document counts / sizes of the active and legacy databases."""
+    """Publishes document counts / sizes of the application's database (no other database is touched)."""
 
     def __init__(self, cfg: Settings, store_factory):
         super().__init__(name="stats", daemon=True)
@@ -55,18 +54,13 @@ class StatsPublisher(threading.Thread):
     def sample(self) -> dict:
         if self._store is None:
             self._store = self.store_factory()
-        client = self._store.client
+        db = self._store.db
         t = time.perf_counter()
-        client.admin.command("ping")
+        db.command("ping")
         latency = round((time.perf_counter() - t) * 1000, 1)
-        try:
-            names = [d for d in client.list_database_names() if d not in SYSTEM_DBS]
-        except Exception:  # noqa: BLE001 - user without listDatabases
-            names = list(dict.fromkeys([self.cfg.mongodb_db, *self.cfg.backup_db_list]))
         dbs: dict = {}
         used = 0.0
-        for name in names:
-            db = client[name]
+        for name in (self.cfg.mongodb_db,):
             from .backup import real_collections
             colls = {c: db[c].estimated_document_count() for c in sorted(real_collections(db))
                      if not c.startswith(("system.", "_healthcheck_"))}
@@ -81,7 +75,8 @@ class StatsPublisher(threading.Thread):
                          "active": name == self.cfg.mongodb_db}
         return {"ok": True, "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "latency_ms": latency, "active_db": self.cfg.mongodb_db, "databases": dbs,
-                "cluster_used_mb": round(used, 2), "quota_mb": self.cfg.atlas_quota_mb,
+                "db_used_mb": round(used, 2), "reserved_mb": self.cfg.atlas_reserved_mb,
+                "cluster_used_mb": round(used + self.cfg.atlas_reserved_mb, 2), "quota_mb": self.cfg.atlas_quota_mb,
                 "soft_limit_pct": self.cfg.atlas_soft_limit_pct}
 
     def run(self) -> None:

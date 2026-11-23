@@ -17,6 +17,10 @@ from typing import Mapping
 AIRSPY_HF_SAMPLE_RATES = (912000, 768000, 650000, 456000, 384000, 228000, 192000)
 VALID_SOURCES = ("airspyhf", "simulated", "replay")
 DEFAULT_CHANNELS = "DCF77:77500,DCF49:129100,HGA22:135600,DCF39:139000"
+#: The one database this application connects to (reads and writes).
+DEFAULT_DATABASE = "fre_dataset_v2"
+#: Databases this application must never use (legacy data, frozen 23 Nov 2026).
+LEGACY_DATABASES = ("fre_dataset",)
 
 _URI_CRED_RE = re.compile(r"(mongodb(?:\+srv)?://)([^:/@\s]+):([^@\s]+)@")
 
@@ -85,7 +89,6 @@ _SPECIAL_PARSERS = {
     "backup_dir": lambda v: Path(v).expanduser(),
     "relay_port": str,
     "ir_port": str,
-    "backup_databases": str,
     "archive_dir": lambda v: Path(v).expanduser(),
 }
 
@@ -94,7 +97,7 @@ _SPECIAL_PARSERS = {
 class Settings:
     # --- MongoDB (secret URI is excluded from repr) ---
     mongodb_uri: str | None = field(default=None, repr=False)
-    mongodb_db: str = "fre_dataset"
+    mongodb_db: str = "fre_dataset_v2"   # the ONLY database this application uses
     mongodb_app_name: str = "fre-platform"
     mongodb_timeout_ms: int = 8000
 
@@ -152,6 +155,9 @@ class Settings:
     # Atlas storage guard: above soft limit only detections/metadata are uploaded.
     atlas_quota_mb: float = 512.0
     atlas_soft_limit_pct: float = 85.0
+    # Space other databases occupy on the same Atlas cluster (M0 quota is per cluster).
+    # Counted by the quota guard WITHOUT connecting to those databases.
+    atlas_reserved_mb: float = 0.0
     quota_check_s: float = 600.0
 
     # --- detection thresholds ---
@@ -182,7 +188,6 @@ class Settings:
     backup_dir: Path | None = None      # default: <data_dir>/backups
     backup_time: str = "03:30"          # local time, HH:MM
     backup_keep_days: int = 14
-    backup_databases: str | None = None  # comma list; default: FRE_MONGODB_DB + "fre_dataset"
     backup_min_free_mb: int = 1024
 
     # --- local archive of every record, filed by its UTC timestamp ---
@@ -232,6 +237,11 @@ class Settings:
             raise ConfigError("FRE_AIRSPY_ATTENUATION must be 0..8")
         if self.log_format not in ("json", "text"):
             raise ConfigError("FRE_LOG_FORMAT must be 'json' or 'text'")
+        if self.mongodb_db in LEGACY_DATABASES:
+            raise ConfigError(f"FRE_MONGODB_DB={self.mongodb_db!r} is the frozen legacy database; this "
+                              f"application only reads and writes {DEFAULT_DATABASE!r}")
+        if self.atlas_reserved_mb < 0:
+            raise ConfigError("FRE_ATLAS_RESERVED_MB must be >= 0")
         if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", self.backup_time):
             raise ConfigError("FRE_BACKUP_TIME must be HH:MM (24 h, local time)")
         if self.backup_keep_days < 1:
@@ -270,11 +280,8 @@ class Settings:
 
     @property
     def backup_db_list(self) -> list[str]:
-        if self.backup_databases:
-            names = [d.strip() for d in self.backup_databases.split(",") if d.strip()]
-        else:
-            names = [self.mongodb_db, "fre_dataset"]
-        return list(dict.fromkeys(names))  # de-duplicate, keep order
+        """Databases the backup dumps: only the application's own database."""
+        return [self.mongodb_db]
 
     @property
     def mongodb_configured(self) -> bool:

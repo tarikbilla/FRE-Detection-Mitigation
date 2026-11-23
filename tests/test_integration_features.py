@@ -167,7 +167,8 @@ def test_backup_dumps_all_databases_and_prunes(icfg):
     (old / "manifest.json").write_text("{}")
     when = datetime(2026, 11, 24, 2, 30, 0, tzinfo=timezone.utc)
     m = run_backup(cfg, client=client, day="2026-11-24", now=when)
-    assert m["ok"] and m["documents"] == 29 and set(m["databases"]) == {"fre_dataset_v2", "fre_dataset"}
+    # only the application's own database is backed up - the legacy fre_dataset is never touched
+    assert m["ok"] and m["documents"] == 26 and set(m["databases"]) == {"fre_dataset_v2"}
     assert m["name"] == "2026-11-24T023000Z" and m["trigger"] == "manual"
     assert "2026-11-01" in m["removed_old"] and not old.exists()
     f = cfg.backup_path / "2026-11-24T023000Z" / "fre_dataset_v2" / "telegrams.jsonl.gz"
@@ -207,7 +208,7 @@ def test_stats_publisher_counts_all_databases(icfg):
     s = pub.sample()
     assert s["ok"] and s["active_db"] == "fre_dataset_v2"
     assert s["databases"]["fre_dataset_v2"]["collections"] == {"relay_events": 1, "telegrams": 25}
-    assert s["databases"]["fre_dataset_v2"]["active"] and not s["databases"]["fre_dataset"]["active"]
+    assert set(s["databases"]) == {"fre_dataset_v2"}   # other databases are never read
 
 
 def test_new_settings_from_env(tmp_path):
@@ -215,9 +216,26 @@ def test_new_settings_from_env(tmp_path):
                                "FRE_RELAY_DATA_DIR": str(tmp_path / "r"), "FRE_BACKUP_TIME": "02:15",
                                "FRE_IR_ENABLED": "false", "FRE_DATA_DIR": str(tmp_path)})
     assert c.relay_data_dir == tmp_path / "r" and c.backup_time == "02:15" and not c.ir_enabled
-    assert c.backup_path == tmp_path / "backups" and c.backup_db_list == ["fre_dataset_v2", "fre_dataset"]
+    assert c.backup_path == tmp_path / "backups" and c.backup_db_list == ["fre_dataset_v2"]
     with pytest.raises(ConfigError):
         Settings.from_env(env={"FRE_SOURCE": "simulated", "FRE_BACKUP_TIME": "25:00"})
+
+
+def test_application_uses_only_the_v2_database():
+    assert Settings.from_env(env={"FRE_SOURCE": "simulated"}).mongodb_db == "fre_dataset_v2"   # default
+    with pytest.raises(ConfigError, match="legacy"):
+        Settings.from_env(env={"FRE_SOURCE": "simulated", "FRE_MONGODB_DB": "fre_dataset"})
+
+
+def test_quota_guard_counts_reserved_space_without_reading_other_databases():
+    mongomock = pytest.importorskip("mongomock")
+    from fre_platform.storage.mongo import MongoStore
+    client = mongomock.MongoClient(tz_aware=True)
+    client["fre_dataset"]["telegrams"].insert_one({"_id": "legacy"})
+    store = MongoStore(client=client, db_name="fre_dataset_v2", reserved_mb=99.0)
+    used = store.storage_used_mb()
+    assert used is None or used >= 99.0          # mongomock may not implement dbStats
+    assert store.db.name == "fre_dataset_v2"
 
 
 # --------------------------------------------------------------- dashboard

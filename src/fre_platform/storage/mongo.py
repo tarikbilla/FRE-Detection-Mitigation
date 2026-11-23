@@ -143,8 +143,8 @@ class UploadResult:
 
 
 class MongoStore:
-    def __init__(self, uri: str | None = None, db_name: str = "fre_dataset", app_name: str = "fre-platform",
-                 timeout_ms: int = 8000, client: MongoClient | None = None):
+    def __init__(self, uri: str | None = None, db_name: str = "fre_dataset_v2", app_name: str = "fre-platform",
+                 timeout_ms: int = 8000, client: MongoClient | None = None, reserved_mb: float = 0.0):
         if client is None:
             if not uri:
                 raise ConfigError("FRE_MONGODB_URI is not set")
@@ -152,12 +152,14 @@ class MongoStore:
                                  connectTimeoutMS=timeout_ms, socketTimeoutMS=timeout_ms * 4,
                                  retryWrites=True, retryReads=True, tz_aware=True, w="majority")
         self.client = client
-        self.db = client[db_name]
+        self.db = client[db_name]   # the only database this store ever touches
+        self.reserved_mb = reserved_mb
         self._schema_ready = False
 
     @classmethod
     def from_config(cls, cfg: Settings) -> "MongoStore":
-        return cls(cfg.mongodb_uri, cfg.mongodb_db, cfg.mongodb_app_name, cfg.mongodb_timeout_ms)
+        return cls(cfg.mongodb_uri, cfg.mongodb_db, cfg.mongodb_app_name, cfg.mongodb_timeout_ms,
+                   reserved_mb=cfg.atlas_reserved_mb)
 
     # --------------------------------------------------------------- admin
     def ping(self) -> dict:
@@ -270,21 +272,16 @@ class MongoStore:
                 "roundtrip_ms": round((time.perf_counter() - t) * 1000, 1)}
 
     def storage_used_mb(self) -> float | None:
-        """Data + index size in MB of ALL user databases on the cluster.
+        """Quota-relevant MB: this database (data + index) + ``reserved_mb``.
 
-        The Atlas free-tier quota (M0, 512 MB) is per cluster, so the legacy
-        ``fre_dataset`` counts as well. Falls back to this database alone when the
-        user may not list databases.
+        The Atlas free-tier quota (M0, 512 MB) is per cluster. Other databases on the
+        cluster (the frozen ``fre_dataset``) are accounted for by the configured
+        ``FRE_ATLAS_RESERVED_MB`` - this application never connects to them.
         """
-        def one(db) -> float:
-            s = db.command("dbStats")
-            return (s.get("dataSize", 0) + s.get("indexSize", 0)) / 1024 / 1024
         try:
-            try:
-                names = [n for n in self.client.list_database_names() if n not in ("admin", "local", "config")]
-            except (OperationFailure, NotImplementedError, TypeError):
-                names = [self.db.name]
-            return round(sum(one(self.client[n]) for n in names), 2)
+            s = self.db.command("dbStats")
+            own = (s.get("dataSize", 0) + s.get("indexSize", 0)) / 1024 / 1024
+            return round(own + self.reserved_mb, 2)
         except (OperationFailure, NotImplementedError, TypeError, KeyError):
             return None
 
