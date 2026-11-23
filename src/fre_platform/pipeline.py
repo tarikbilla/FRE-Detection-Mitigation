@@ -20,6 +20,7 @@ from .mitigation.advisor import recommend
 from .protocol.telegram import assess_authenticity
 from .sources.base import IQBlock, IQSource, ns_to_datetime
 from .storage.buffer import LocalBuffer
+from .timeid import make_id
 
 log = logging.getLogger(__name__)
 
@@ -131,8 +132,11 @@ class BlockAnalyzer:
 class Collector:
     def __init__(self, cfg: Settings, source: IQSource, buffer: LocalBuffer, uploader=None,
                  models: FreModels | None = None, keep_all_observations: bool | None = None,
-                 on_block=None):
+                 on_block=None, owns_uploader: bool = True):
         self.cfg = cfg
+        # False when the integrated service shares one uploader between the SDR
+        # collector, relay monitor and IR probe (the service starts/stops it).
+        self.owns_uploader = owns_uploader
         self.source = source
         self.buffer = buffer
         self.uploader = uploader
@@ -245,7 +249,7 @@ class Collector:
 
         # Band spectrum + block quality (frequency-domain research record)
         if block.seq % cfg.spectrum_every_n_blocks == 0 or keep_all or alert or not res["quality"]["valid"]:
-            spec = {"_id": f"{st}|{block.ts_ns}|spectrum", **common,
+            spec = {"_id": make_id(block.ts, st, "spectrum"), **common,
                     "center_freq_hz": float(block.center_freq_hz), "sample_rate_hz": int(block.sample_rate_hz),
                     "psd": res["psd"] or {"n_bins": 0, "db": []}, "band": res["band"],
                     "quality": res["quality"], "acquisition": block.meta}
@@ -254,7 +258,7 @@ class Collector:
         for c in res["channels"]:
             # Per-channel feature observation (the ML-ready dataset record)
             if keep_all or block.seq % cfg.observation_every_n_blocks == 0 or alert:
-                obs = {"_id": f"{st}|{block.ts_ns}|{c['name']}", **common,
+                obs = {"_id": make_id(block.ts, st, c["name"]), **common,
                        "channel": {"name": c["name"], "freq_hz": c["freq_hz"]},
                        "features": c["features"], "signal_state": c["signal_state"],
                        "quality": {k: res["quality"][k] for k in ("valid", "rms_dbfs", "clip_fraction",
@@ -268,7 +272,7 @@ class Collector:
             # Decoded received telegrams (the actual signal content) + authenticity features
             for i, tg in enumerate(c["telegrams"]):
                 docs.append(("telegrams", {
-                    "_id": f"{st}|{block.ts_ns}|{c['name']}|{i}", **common,
+                    "_id": make_id(block.ts, st, c["name"], i), **common,
                     "channel": {"name": c["name"], "freq_hz": c["freq_hz"]},
                     "received_ts": block.ts, **tg,
                     "label_source": "simulation" if block.truth is not None else None,
@@ -335,7 +339,7 @@ class Collector:
         self.buffer.put_many([self.session_doc()])
         log.info("collector starting", extra={"device_id": self.device_id, "settings": self.cfg.safe_dict()})
         self.source.start()
-        if self.uploader is not None and not self.uploader.is_alive():
+        if self.uploader is not None and self.owns_uploader and not self.uploader.is_alive():
             self.uploader.start()
         timeout = max(5.0, 3 * self.cfg.block_seconds)
         try:
@@ -371,7 +375,7 @@ class Collector:
         finally:
             log.info("collector stopping", extra={"blocks": self.stats["blocks"]})
             self.source.stop()
-            if self.uploader is not None:
+            if self.uploader is not None and self.owns_uploader:
                 self.uploader.stop()
             self.write_status()
         return self.stats
