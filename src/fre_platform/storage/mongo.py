@@ -28,8 +28,9 @@ _COMMON_REQ = ["schema_version", "dataset_version", "experiment_id", "station_id
 _COMMON_PROPS = {"schema_version": _INT, "dataset_version": _STR, "experiment_id": _STR, "station_id": _STR,
                  "ts": _DATE, "ts_ns": _INT, "seq": _INT, "source": _STR}
 
-# Clean, professional research dataset: one metadata collection plus three
-# time-series collections (signal features, spectra, decoded telegrams). ML /
+# Clean, professional research dataset: one metadata collection, three SDR
+# time-series collections (signal features, spectra, decoded telegrams) and two
+# FRE-side collections (relay switching ground truth, optical-port probes). ML /
 # detection results are NOT stored here - they are added in a later phase.
 VALIDATORS: dict[str, dict] = {
     # One document per collection run / configuration (reproducibility metadata).
@@ -56,6 +57,17 @@ VALIDATORS: dict[str, dict] = {
         "properties": {**_COMMON_PROPS, "channel": _CHANNEL, "kind": _STR, "protocol": _STR,
                        "checksum_ok": _BOOL, "raw_hex": _STR, "evu_address": {"bsonType": ["string", "null"]},
                        "time": {"bsonType": ["object", "null"]}}}},
+    # Ground truth: what the FRE actually switched (ESP32 on the K1..K4 dry contacts).
+    "relay_events": {"$jsonSchema": {
+        "bsonType": "object", "required": _COMMON_REQ + ["type"],
+        "properties": {**_COMMON_PROPS, "type": _STR, "relay": {"bsonType": ["string", "null"]},
+                       "position": {"enum": ["a", "b", None]}, "esp_ms": {"bsonType": ["int", "long", "null"]},
+                       "host": _STR, "raw": {"bsonType": ["string", "null"]}}}},
+    # Read-only IEC 62056-21 probes of the FRE's optical (IR) port.
+    "ir_readouts": {"$jsonSchema": {
+        "bsonType": "object", "required": _COMMON_REQ + ["responded"],
+        "properties": {**_COMMON_PROPS, "responded": _BOOL, "echo": {"bsonType": ["bool", "null"]},
+                       "ident": {"bsonType": ["object", "null"]}, "readout": {"bsonType": ["object", "null"]}}}},
 }
 
 INDEXES: dict[str, list[IndexModel]] = {
@@ -77,8 +89,36 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("kind", ASCENDING), ("ts", DESCENDING)], name="kind_ts"),
         IndexModel([("evu_address", ASCENDING)], name="evu_address"),
     ],
+    "relay_events": [
+        IndexModel([("station_id", ASCENDING), ("ts", ASCENDING)], name="station_ts"),
+        IndexModel([("type", ASCENDING), ("ts", DESCENDING)], name="type_ts"),
+        IndexModel([("relay", ASCENDING), ("ts", DESCENDING)], name="relay_ts"),
+    ],
+    "ir_readouts": [
+        IndexModel([("station_id", ASCENDING), ("ts", ASCENDING)], name="station_ts"),
+        IndexModel([("responded", ASCENDING), ("ts", DESCENDING)], name="responded_ts"),
+    ],
 }
 COLLECTIONS = tuple(INDEXES)
+
+# Read-only view: ONE time-ordered stream of what was broadcast (SDR telegrams), what
+# the receiver did (relay events, heartbeats excluded) and the optical-port probes.
+# No storage cost. Query:  db.timeline.find({ts: {$gte: ISODate("2026-11-24")}}).sort({ts: 1})
+# (ids are timestamp-first, so .sort({_id: 1}) is chronological as well).
+TIMELINE_VIEW = "timeline"
+TIMELINE_PIPELINE = [
+    {"$project": {"_id": 1, "ts": 1, "station_id": 1, "dataset_version": 1, "source": {"$literal": "sdr"},
+                  "event": "$kind", "channel": "$channel.name", "assessment": "$integrity.assessment",
+                  "clock_offset_s": "$integrity.clock_offset_s", "evu_address": 1, "checksum_ok": 1, "raw_hex": 1}},
+    {"$unionWith": {"coll": "relay_events", "pipeline": [
+        {"$match": {"type": {"$nin": ["state", "other"]}}},
+        {"$project": {"_id": 1, "ts": 1, "station_id": 1, "dataset_version": 1, "source": {"$literal": "relay"},
+                      "event": "$type", "relay": 1, "position": 1, "level_pct": 1, "esp_ms": 1, "detail": 1}}]}},
+    {"$unionWith": {"coll": "ir_readouts", "pipeline": [
+        {"$project": {"_id": 1, "ts": 1, "station_id": 1, "dataset_version": 1, "source": {"$literal": "ir"},
+                      "event": {"$cond": ["$responded", "ir_answer", "ir_no_answer"]}, "echo": 1,
+                      "ident": "$ident.line"}}]}},
+]
 
 # Server error codes that will never succeed on retry -> dead-letter the document.
 PERMANENT_WRITE_CODES = {121, 2, 9, 14, 17280, 10334}
@@ -162,8 +202,20 @@ class MongoStore:
                     report["validator_skipped"].append(name)
             names = self.db[name].create_indexes(INDEXES[name])
             report["indexes"][name] = names
+        report["timeline_view"] = self.ensure_timeline_view(TIMELINE_VIEW in existing)
         self._schema_ready = True
         return report
+
+    def ensure_timeline_view(self, exists: bool) -> str:
+        try:
+            if exists:
+                self.db.command({"collMod": TIMELINE_VIEW, "viewOn": "telegrams", "pipeline": TIMELINE_PIPELINE})
+                return "updated"
+            self.db.command({"create": TIMELINE_VIEW, "viewOn": "telegrams", "pipeline": TIMELINE_PIPELINE})
+            return "created"
+        except (OperationFailure, NotImplementedError, TypeError) as exc:  # e.g. mongomock
+            log.warning("could not create the timeline view: %s", exc)
+            return "unsupported"
 
     # --------------------------------------------------------------- write
     def upload(self, collection: str, rows: list[tuple[str, str, dict]]) -> UploadResult:
@@ -218,10 +270,21 @@ class MongoStore:
                 "roundtrip_ms": round((time.perf_counter() - t) * 1000, 1)}
 
     def storage_used_mb(self) -> float | None:
-        """Data + index size of the database in MB (what counts against the M0 quota)."""
+        """Data + index size in MB of ALL user databases on the cluster.
+
+        The Atlas free-tier quota (M0, 512 MB) is per cluster, so the legacy
+        ``fre_dataset`` counts as well. Falls back to this database alone when the
+        user may not list databases.
+        """
+        def one(db) -> float:
+            s = db.command("dbStats")
+            return (s.get("dataSize", 0) + s.get("indexSize", 0)) / 1024 / 1024
         try:
-            s = self.db.command("dbStats")
-            return round((s.get("dataSize", 0) + s.get("indexSize", 0)) / 1024 / 1024, 2)
+            try:
+                names = [n for n in self.client.list_database_names() if n not in ("admin", "local", "config")]
+            except (OperationFailure, NotImplementedError, TypeError):
+                names = [self.db.name]
+            return round(sum(one(self.client[n]) for n in names), 2)
         except (OperationFailure, NotImplementedError, TypeError, KeyError):
             return None
 
