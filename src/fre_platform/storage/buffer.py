@@ -77,6 +77,8 @@ class LocalBuffer:
         self._conn.execute("PRAGMA synchronous=FULL")
         self._conn.executescript(SCHEMA)
         self.pruned_rows = 0
+        # optional TimeArchive: every record put into the buffer is also filed locally by its timestamp
+        self.archive = None
 
     # ---------------------------------------------------------------- write
     def put_many(self, items: list[tuple[str, dict, str]]) -> int:
@@ -103,6 +105,11 @@ class LocalBuffer:
                 cur.execute("ROLLBACK")
                 raise
             self._enforce_limit_locked()
+        if self.archive is not None and items:
+            try:
+                self.archive.write_many(items)
+            except Exception:  # noqa: BLE001 - the archive must never block the upload path
+                log.exception("could not write records to the local archive")
         return added
 
     def put(self, collection: str, doc: dict, mode: str = "insert") -> int:
