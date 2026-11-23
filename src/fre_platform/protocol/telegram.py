@@ -13,7 +13,7 @@ records them, it does not act on, craft or transmit any telegram.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .framing import Frame
 
@@ -79,7 +79,15 @@ def decode_time_payload(payload: bytes) -> DecodedTime | None:
         return None
     iso = None
     try:
-        iso = datetime(year, month, day, hour, minute, second, tzinfo=timezone.utc).isoformat()
+        # The time telegram's wall-clock is GERMAN LOCAL time (CET/CEST), not UTC.
+        # Use the telegram's own DST bit: +2 h (CEST) when set, else +1 h (CET),
+        # and store `iso` as the matching UTC instant so clock_offset_s compares
+        # like-for-like against the receiver's UTC clock.  (Previously this used
+        # tzinfo=timezone.utc directly, making every time telegram read ~3600 s
+        # off and flagging it 'implausible'.)
+        local_tz = timezone(timedelta(hours=2 if dst else 1))
+        local = datetime(year, month, day, hour, minute, second, tzinfo=local_tz)
+        iso = local.astimezone(timezone.utc).isoformat()
     except ValueError:
         pass
     return DecodedTime(year=year, month=month, day=day,

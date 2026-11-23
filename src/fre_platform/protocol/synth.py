@@ -8,7 +8,7 @@ generated — no command/switching telegrams are crafted.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
@@ -16,19 +16,34 @@ from .framing import START, END, checksum
 from ..dsp.demod import DEFAULT_BAUD, DEFAULT_SHIFT_HZ
 
 
+def _german_local(ts: datetime) -> tuple[datetime, bool]:
+    """UTC instant -> (German wall-clock time, DST active)."""
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        local = ts.astimezone(ZoneInfo("Europe/Berlin"))
+        return local, bool(local.dst())
+    except Exception:  # noqa: BLE001 - no tz database: assume CET (winter time)
+        return ts.astimezone(timezone(timedelta(hours=1))), False
+
+
 def build_time_frame(ts: datetime) -> bytes:
     """Build the bytes of a DIN 19244 broadcast *time* telegram (address 0x0000).
 
-    Inverse of :func:`fre_platform.protocol.telegram.decode_time_payload`.
+    Inverse of :func:`fre_platform.protocol.telegram.decode_time_payload`: like the
+    real broadcast, the wall clock is German local time (CET/CEST) with the DST
+    flag in bit 7 of the hour byte. ``ts`` is an instant (naive = UTC).
     """
+    local, dst = _german_local(ts)
     payload = bytes([
         0x00,
-        (ts.second << 2) & 0xFF,
-        ts.minute & 0xFF,
-        ts.hour & 0x7F,  # DST bit (0x80) left off in synthetic data
-        (((ts.weekday() + 1) % 7 & 0x7) << 5) | (ts.day & 0x1F),  # Python Mon=0 -> EFR Sun=0
-        ts.month & 0xFF,
-        (ts.year - 2000) & 0xFF,
+        (local.second << 2) & 0xFF,
+        local.minute & 0xFF,
+        (local.hour & 0x7F) | (0x80 if dst else 0),
+        (((local.weekday() + 1) % 7 & 0x7) << 5) | (local.day & 0x1F),  # Python Mon=0 -> EFR Sun=0
+        local.month & 0xFF,
+        (local.year - 2000) & 0xFF,
     ])
     control = 0x57
     address = b"\x00\x00"

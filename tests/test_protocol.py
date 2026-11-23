@@ -126,7 +126,9 @@ def test_fsk_demod_recovers_time_telegram():
     out = demod.process(bb)
     assert frame in out, (out.hex(), frame.hex())
     tgs = decode_bytes(out)
-    assert any(t.kind == "time" and t.time.hour == 11 and t.time.minute == 48 for t in tgs)
+    # broadcast wall clock is German local time: 11:48 UTC in November = 12:48 CET
+    assert any(t.kind == "time" and t.time.hour == 12 and t.time.minute == 48
+               and datetime.fromisoformat(t.time.iso) == ts for t in tgs)
 
 
 def test_fsk_demod_survives_noise_and_block_split():
@@ -142,3 +144,15 @@ def test_fsk_demod_survives_noise_and_block_split():
     for i in range(0, len(bb), 777):            # feed in uneven chunks across "blocks"
         out += demod.process(bb[i:i + 777])
     assert frame in bytes(out)
+
+
+def test_time_telegram_roundtrip_german_local_time():
+    """Synth encodes CET/CEST + DST bit like the real broadcast; decoder returns the same UTC instant."""
+    from datetime import datetime, timezone
+    from fre_platform.protocol.synth import build_time_frame
+    from fre_platform.protocol.telegram import decode_bytes
+    for utc, hour, dst in ((datetime(2026, 1, 15, 11, 0, 4, tzinfo=timezone.utc), 12, False),
+                           (datetime(2026, 7, 15, 11, 0, 4, tzinfo=timezone.utc), 13, True)):
+        tg = decode_bytes(build_time_frame(utc))[0]
+        assert tg.time.hour == hour and tg.time.dst is dst
+        assert datetime.fromisoformat(tg.time.iso) == utc
