@@ -81,6 +81,12 @@ _SPECIAL_PARSERS = {
     "mongodb_uri": str,
     "replay_path": str,
     "airspy_serial": str,
+    "relay_data_dir": lambda v: Path(v).expanduser(),
+    "backup_dir": lambda v: Path(v).expanduser(),
+    "relay_port": str,
+    "ir_port": str,
+    "backup_databases": str,
+    "archive_dir": lambda v: Path(v).expanduser(),
 }
 
 
@@ -156,6 +162,37 @@ class Settings:
     jam_floor_rise_db: float = 10.0
     zscore_threshold: float = 6.0
 
+    # --- FRE relay monitor (ESP32-S3 on the K1..K4 dry contacts; ground truth) ---
+    relay_enabled: bool = True
+    relay_port: str = "auto"            # auto = /dev/serial/by-id/*CP210* (ESP32-S3 UART bridge)
+    relay_baud: int = 115200
+    relay_data_dir: Path = field(default_factory=lambda: Path("~/FRE-Relay-Data").expanduser())
+    relay_gap_warn_s: float = 180.0     # no line from the ESP for this long -> "gap" record
+    relay_state_upload_s: float = 3600.0  # upload one 60 s heartbeat per hour (all events always)
+    relay_experiment_id: str = "relay-switching-001"
+
+    # --- FRE optical (IR) port, IEC 62056-21 read-only probe ---
+    ir_enabled: bool = True
+    ir_port: str = "auto"               # auto = /dev/serial/by-id/*FTDI* (Emlog IR head)
+    ir_probe_interval_s: float = 300.0
+    ir_experiment_id: str = "ir-optical-001"
+
+    # --- daily local backup of MongoDB ---
+    backup_enabled: bool = True
+    backup_dir: Path | None = None      # default: <data_dir>/backups
+    backup_time: str = "03:30"          # local time, HH:MM
+    backup_keep_days: int = 14
+    backup_databases: str | None = None  # comma list; default: FRE_MONGODB_DB + "fre_dataset"
+    backup_min_free_mb: int = 1024
+
+    # --- local archive of every record, filed by its UTC timestamp ---
+    archive_enabled: bool = True
+    archive_dir: Path | None = None     # default: <data_dir>/archive
+    archive_keep_days: int = 0          # 0 = keep forever (past days are gzip-compressed)
+
+    # --- dashboard statistics (MongoDB counts published by the service) ---
+    stats_interval_s: float = 60.0
+
     # --- logging / ops ---
     log_level: str = "INFO"
     log_format: str = "json"
@@ -195,6 +232,12 @@ class Settings:
             raise ConfigError("FRE_AIRSPY_ATTENUATION must be 0..8")
         if self.log_format not in ("json", "text"):
             raise ConfigError("FRE_LOG_FORMAT must be 'json' or 'text'")
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", self.backup_time):
+            raise ConfigError("FRE_BACKUP_TIME must be HH:MM (24 h, local time)")
+        if self.backup_keep_days < 1:
+            raise ConfigError("FRE_BACKUP_KEEP_DAYS must be >= 1")
+        if self.ir_probe_interval_s < 10:
+            raise ConfigError("FRE_IR_PROBE_INTERVAL_S must be >= 10")
         if self.mongodb_uri and not self.mongodb_uri.startswith(("mongodb://", "mongodb+srv://")):
             raise ConfigError("FRE_MONGODB_URI must start with mongodb:// or mongodb+srv://")
         return self
@@ -216,6 +259,22 @@ class Settings:
     @property
     def block_samples(self) -> int:
         return int(round(self.sample_rate_hz * self.block_seconds))
+
+    @property
+    def backup_path(self) -> Path:
+        return Path(self.backup_dir) if self.backup_dir else Path(self.data_dir) / "backups"
+
+    @property
+    def archive_path(self) -> Path:
+        return Path(self.archive_dir) if self.archive_dir else Path(self.data_dir) / "archive"
+
+    @property
+    def backup_db_list(self) -> list[str]:
+        if self.backup_databases:
+            names = [d.strip() for d in self.backup_databases.split(",") if d.strip()]
+        else:
+            names = [self.mongodb_db, "fre_dataset"]
+        return list(dict.fromkeys(names))  # de-duplicate, keep order
 
     @property
     def mongodb_configured(self) -> bool:
