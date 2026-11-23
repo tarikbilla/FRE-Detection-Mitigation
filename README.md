@@ -235,8 +235,8 @@ time is itself research evidence. Plug the head in on the Pi; it is found as
 
 ## Daily backups
 
-At `FRE_BACKUP_TIME` (03:30 local) every collection of `FRE_BACKUP_DATABASES`
-(default: the active database + legacy `fre_dataset`) is written to
+At `FRE_BACKUP_TIME` (03:30 local) every collection of `fre_dataset_v2` (the only
+database the application uses) is written to
 `/var/lib/fre-platform/backups/<YYYY-MM-DDTHHMMSSZ>/<db>/<collection>.jsonl.gz` (MongoDB
 Extended JSON, one document per line) with a `manifest.json` (counts, SHA-256,
 redacted settings). Unchanged collections are hard-linked to the previous day
@@ -259,7 +259,7 @@ template.
 
 ### MongoDB Atlas
 
-Create a database user with **readWrite on `fre_dataset_v2`** (and read on `fre_dataset` for backups), allow the Pi's IP
+Create a database user with **readWrite on `fre_dataset_v2` only** (the application never uses another database), allow the Pi's IP
 in Atlas *Network Access*, then set either a full URI **or** the three parts:
 
 ```ini
@@ -274,7 +274,7 @@ FRE_MONGODB_DB=fre_dataset_v2
 `fre-platform db-check` must print `"ok": true`. If the URI is unset, the collector
 keeps running and buffers locally until it is configured.
 
-**Free tier (M0, 512 MB per cluster — all databases count, including the frozen `fre_dataset`).** Defaults target ~10 MB/day. Above
+**Free tier (M0, 512 MB per cluster).** Space used by other databases on the cluster (the frozen `fre_dataset`, ~99 MB) is set as `FRE_ATLAS_RESERVED_MB` and counted by the guard without connecting to them. Defaults target ~10 MB/day. Above
 `FRE_ATLAS_SOFT_LIMIT_PCT` (85 %) of `FRE_ATLAS_QUOTA_MB` the uploader keeps bulk
 data (spectra/observations) local and uploads only telegrams and metadata.
 
@@ -283,7 +283,8 @@ data (spectra/observations) local and uploads only telegrams and metadata.
 | Variable | Default | Meaning |
 |---|---|---|
 | `FRE_MONGODB_URI` / `_USERNAME`+`_PASSWORD`+`_HOST` | – | Atlas credentials (secret) |
-| `FRE_MONGODB_DB` | `fre_dataset` | database name (deployed: `fre_dataset_v2`) |
+| `FRE_MONGODB_DB` | `fre_dataset_v2` | the ONLY database the application connects to; `fre_dataset` is refused |
+| `FRE_ATLAS_RESERVED_MB` | `0` (deployed: `99`) | MB of other databases on the cluster, for the quota guard |
 | `FRE_SOURCE` | `airspyhf` | `airspyhf`, `simulated` or `replay` |
 | `FRE_RECEIVER_MODEL` | `Airspy HF+ Discovery` | recorded in session metadata |
 | `FRE_CENTER_FREQ_HZ` / `FRE_SAMPLE_RATE_HZ` | `108000` / `192000` | tuning / sample rate |
@@ -303,7 +304,7 @@ data (spectra/observations) local and uploads only telegrams and metadata.
 | `FRE_RELAY_STATE_UPLOAD_S` | `3600` | upload one relay heartbeat per hour |
 | `FRE_IR_ENABLED` / `FRE_IR_PORT` / `FRE_IR_PROBE_INTERVAL_S` | `true` / `auto` / `300` | IR probe |
 | `FRE_BACKUP_ENABLED` / `FRE_BACKUP_TIME` / `FRE_BACKUP_KEEP_DAYS` | `true` / `03:30` / `14` | daily backup |
-| `FRE_BACKUP_DATABASES` / `FRE_BACKUP_DIR` | active + `fre_dataset` / `<data_dir>/backups` | what / where |
+| `FRE_BACKUP_DIR` | `<data_dir>/backups` | where (only `fre_dataset_v2` is backed up) |
 | `FRE_RELAY_EXPERIMENT_ID` / `FRE_IR_EXPERIMENT_ID` | `relay-switching-001` / `ir-optical-001` | experiment ids |
 | `FRE_ARCHIVE_ENABLED` / `FRE_ARCHIVE_DIR` / `FRE_ARCHIVE_KEEP_DAYS` | `true` / `<data_dir>/archive` / `0` (forever) | local time archive |
 | `FRE_LOG_LEVEL` / `FRE_LOG_FORMAT` | `INFO` / `json` | logging |
@@ -312,7 +313,9 @@ data (spectra/observations) local and uploads only telegrams and metadata.
 
 ## 4. Dataset schema (`fre_dataset_v2`)
 
-`fre_dataset` (until 23 Nov 2026) is kept unchanged as a frozen legacy database.
+`fre_dataset` (until 23 Nov 2026) is a frozen legacy database. The application never connects to it:
+`FRE_MONGODB_DB=fre_dataset` is rejected at start-up, and backups, statistics and the quota
+guard only touch `fre_dataset_v2`.
 
 Four collections, created automatically with JSON-schema validators and indexes.
 Every time-series document carries `schema_version`, `dataset_version`,
