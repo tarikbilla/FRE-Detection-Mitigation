@@ -1,0 +1,115 @@
+> **Integrated (23 Nov 2026):** the relay logger now runs inside the `fre-platform` service
+> (src/fre_platform/relay/). Service name: `fre-platform` (was `fre-relay-logger`); live view:
+> `python3 main.py` (panel 2); MongoDB: `fre_dataset_v2.relay_events` (uploaded automatically).
+> Data files and their format are unchanged (~/FRE-Relay-Data). Firmware: firmware/esp32-relay-monitor/.
+
+================================================================
+ FRE Relay Monitor - command cheat sheet
+ Copy/paste these on the Raspberry Pi. Nothing here changes data;
+ they only read, except the clearly marked "control" section.
+================================================================
+
+Where things are:
+  Code    : ~/Desktop/FRE-Relay-Monitor/
+  Data    : ~/FRE-Relay-Data/            (one file per UTC day)
+  Python  : ~/.venvs/fre-relay-monitor/
+  Service : fre-relay-logger
+  ESP port: /dev/serial/by-id/usb-Silicon_Labs_CP2102N_..._if00-port0
+
+Note on time: files use UTC. German winter time = UTC+1, so between
+00:00 and 01:00 local, "today" in UTC is still yesterday's file.
+
+
+----------------------------------------------------------------
+ 1. IS IT RUNNING / HEALTHY
+----------------------------------------------------------------
+
+# Is the logger active? (look for "active (running)"; press q to exit)
+systemctl status fre-relay-logger
+
+# One-word answer: active / failed / inactive
+systemctl is-active fre-relay-logger
+
+# Last 20 log lines from the service (startup, connect, errors)
+journalctl -u fre-relay-logger -n 20
+
+# Live view - watch events as they happen (Ctrl+C to leave; keeps running)
+journalctl -u fre-relay-logger -f
+
+
+----------------------------------------------------------------
+ 2. IS IT STILL RECORDING / WHAT HAS IT SEEN
+----------------------------------------------------------------
+
+# Newest few rows of today's file (newest "state" row should be < 1 min old)
+tail -3 ~/FRE-Relay-Data/relays_$(date -u +%F).csv
+
+# Did any relay actually switch today? (empty = nothing switched yet)
+grep event ~/FRE-Relay-Data/relays_$(date -u +%F).csv
+
+# Count today's real relay events
+grep -c event ~/FRE-Relay-Data/relays_$(date -u +%F).csv
+
+# Look at a specific day instead of today
+grep event ~/FRE-Relay-Data/relays_2026-11-19.csv
+
+# List all data files collected so far, with sizes
+ls -la ~/FRE-Relay-Data/
+
+# Any logger problems recorded? (gaps, disconnects, disk, reopen)
+grep -E "gap|serial_lost|serial_unavailable|disk_low|file_reopened" ~/FRE-Relay-Data/relays_$(date -u +%F).csv
+
+
+----------------------------------------------------------------
+ 3. IS THE CLOCK / HARDWARE OK
+----------------------------------------------------------------
+
+# Clock must say: System clock synchronized: yes
+timedatectl
+
+# Is the ESP present? (should list one Silicon_Labs CP2102N line)
+ls /dev/serial/by-id/
+
+# Free disk space (data is tiny, ~0.5 MB/day; just a sanity check)
+df -h ~
+
+
+----------------------------------------------------------------
+ 4. MONGODB UPLOAD  (safe: dry run writes nothing)
+----------------------------------------------------------------
+
+cd ~/Desktop/FRE-Relay-Monitor
+
+# Dry run - shows settings found + what WOULD be uploaded, writes nothing
+~/.venvs/fre-relay-monitor/bin/python logger/upload_to_mongo.py
+
+# Test the Atlas login only (still writes nothing)
+~/.venvs/fre-relay-monitor/bin/python logger/upload_to_mongo.py --ping
+
+# Real upload - ONLY after Tarik agrees the collection
+# ~/.venvs/fre-relay-monitor/bin/python logger/upload_to_mongo.py --since 2026-11-19 --commit
+
+
+----------------------------------------------------------------
+ 5. CONTROL  (these change the running service - use on purpose)
+----------------------------------------------------------------
+
+# Stop / start / restart the logger
+sudo systemctl stop fre-relay-logger
+sudo systemctl start fre-relay-logger
+sudo systemctl restart fre-relay-logger
+
+# After copying a new code folder over the old one, re-run the installer
+# (keeps data + venv; replace the port if it ever changes):
+cd ~/Desktop/FRE-Relay-Monitor
+bash deploy/install.sh /dev/serial/by-id/usb-Silicon_Labs_CP2102N_USB_to_UART_Bridge_Controller_<id>-if00-port0
+
+
+----------------------------------------------------------------
+ 6. GOLDEN RULES
+----------------------------------------------------------------
+ - NEVER delete ~/FRE-Relay-Data  (that's the real dataset).
+ - To update code: copy the new folder over the old one, never delete first.
+ - A quiet day (only "state" rows, no "event") is normal until a real
+   broadcast command arrives - it means nothing switched, not that it broke.
+================================================================
