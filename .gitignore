@@ -39,3 +39,11 @@ models/*.joblib
 .idea/
 *.swp
 .DS_Store
+
+# Research material that should not land in the PUBLIC repo by accident
+# (decide explicitly before committing any of it):
+archive/
+docs/hardware/
+analysis/*.csv
+tools/ir-bench/logs*/
+*.geany

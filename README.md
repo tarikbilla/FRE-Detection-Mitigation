@@ -1,26 +1,46 @@
 # FRE Detection & Mitigation Research Platform
 
-A receive-only research platform that **observes** long-wave radio ripple-control
-(Funkrundsteuerung / EFR / FRE) signals with an **Airspy HF+ Discovery** on a
-Raspberry Pi, **decodes the telegrams**, extracts signal features, assesses each
-telegram's **authenticity**, and builds a clean, versioned **research dataset** in
-**MongoDB Atlas** (database `fre_dataset`) for further analysis and machine learning.
+A receive-only research platform for long-wave radio ripple control
+(Funkrundsteuerung / EFR / FRE). **One application** on a Raspberry Pi records every
+data source of the testbed and builds one versioned **research dataset** in
+**MongoDB Atlas** (database **`fre_dataset_v2`**):
+
+| Source | Hardware | What it records | Collection |
+|---|---|---|---|
+| **SDR** | Airspy HF+ Discovery | what was **broadcast**: decoded telegrams + authenticity, signal features, spectra | `telegrams`, `observations`, `spectra`, `sessions` |
+| **Relay monitor** | ESP32-S3 on the FRE's K1..K4 dry contacts | what the receiver **did**: every relay switch (ground truth) | `relay_events` |
+| **IR probe** | Emlog IR head (FTDI) on the FRE's optical port | read-only IEC 62056-21 probes of the receiver | `ir_readouts` |
+
+Plus a **4-panel live dashboard**, a **daily local backup** of all MongoDB data and
+a durable local buffer that survives network/Atlas outages.
 
 > **Receive-only and defensive.** The platform contains no transmit code path and
 > the Airspy HF+ Discovery has no transmitter. It decodes the plaintext broadcast
 > time telegram and classifies command telegrams at header level only — it never
 > crafts, replays, acts on, or transmits any telegram, and never touches utility
-> equipment. Attack conditions (jamming, spoofing, time-replay) exist only as
-> in-memory **simulations** for building labelled datasets and defensive research.
+> equipment. The relay monitor only *reads* dry contacts; the IR probe only sends
+> the IEC 62056-21 sign-on / readout request (never programming mode or writes).
+> Attack conditions (jamming, spoofing, time-replay) exist only as in-memory
+> **simulations** for building labelled datasets and defensive research.
 > Background and signal spec: the public *BlinkenCity* talk, 38C3 (2024).
 
 ```
-Airspy HF+ Discovery ─► airspyhf_rx ─► per-channel DDC ─┬─► features ─────────► observations
-  (IQ, 192 kS/s)        (receive-only)                  ├─► band spectrum ────► spectra
-                                                        └─► FSK demod ─► DIN 19244 decode
-                                                                         + authenticity ─► telegrams
-                                             SQLite buffer (survives outages) ─► MongoDB Atlas (fre_dataset)
+Airspy HF+ ─► airspyhf_rx ─► per-channel DDC ─┬─► features ───────────────► observations
+ (192 kS/s)                                   ├─► band spectrum ──────────► spectra
+                                              └─► FSK demod ─► DIN 19244
+                                                  decode + authenticity ──► telegrams
+FRE K1..K4 ─► ESP32-S3 (fw v2) ─► USB serial ─► relay monitor ──────────► relay_events
+                                                 └─► ~/FRE-Relay-Data/relays_YYYY-MM-DD.{jsonl,csv}
+FRE optical port ─► IR head ─► IEC 62056-21 probe (every 5 min) ────────► ir_readouts
+
+        all ─► SQLite buffer (survives outages) ─► uploader ─► MongoDB Atlas (fre_dataset_v2)
+                                       daily 03:30 ─► /var/lib/fre-platform/backups/<day>/
 ```
+
+One systemd service, **`fre-platform`**, runs everything (it replaced the former
+`fre-collector` and `fre-relay-logger` services on 23 Nov 2026). Each part runs in
+its own supervised thread: if the Airspy, the ESP32 or the IR head is unplugged,
+only that part waits and reconnects; the others keep collecting.
 
 ---
 
@@ -38,6 +58,9 @@ attacker who injects spoofed/replayed telegrams:
 * **`observations`** — per-channel signal-feature time-series, ready for ML.
 * **`spectra`** — periodic band spectra + capture quality.
 * **`sessions`** — full reproducibility metadata for every capture run.
+* **`relay_events`** — the receiver's actual reaction (K1..K4 switching), joinable
+  with `telegrams` on `ts` / `station_id`: broadcast vs. what the device did.
+* **`ir_readouts`** — every read-only probe of the receiver's optical port.
 
 Detection/ML is a **later phase** (`FRE_ENABLE_DETECTION`, off by default) so the
 dataset stays clean; the platform ships the detector/ML code ready for it.
@@ -47,26 +70,48 @@ dataset stays clean; the platform ships the detector/ML code ready for it.
 ## Run it — one command
 
 ```bash
-cd ~/Desktop/FRE-Detection-Mitigation
-python3 main.py
+fre                 # from any terminal on the Pi  (or double-click "FRE Platform" on the desktop)
 ```
 
-That's all. `main.py` switches to the project's virtual environment, loads the settings
-file automatically, and starts the whole application: receiver → decoder → database
-upload, with a full-screen live dashboard. **Ctrl+C** stops it cleanly (it finishes the
-current block and uploads what is buffered).
+`fre` (= `python3 ~/Desktop/FRE-Detection-Mitigation/main.py`) does everything:
 
-* If the background service (`fre-collector`) is already running, `main.py` simply
-  **shows its live view** instead of starting a second copy (only one program can use
-  the Airspy). Closing the view does not stop the service.
-* `python3 main.py --foreground` collects in the terminal instead
-  (stop the service first: `sudo systemctl stop fre-collector`).
-* `python3 main.py --plain` uses scrolling lines instead of the full-screen panel.
-* Every other command works through it too, for example
-  `python3 main.py db-check`, `python3 main.py buffer-status`,
-  `python3 main.py decode 68 0a 0a 68 ...`, `python3 main.py --help`.
+1. checks that no legacy service holds the hardware,
+2. **starts the `fre-platform` service if it is not running** and waits for its first
+   heartbeat (Airspy, ESP32, IR head, MongoDB, backups — all in one service),
+3. opens the **FRE Platform app** (green-on-black terminal UI).
 
-In dashboard mode, logs go to `/var/log/fre-platform/fre-platform.log`.
+Quitting the app (`q`) leaves collection running in the service.
+
+| Tab | Content |
+|---|---|
+| `1` **Overview** | the 4 panels: SDR (with 2-min SNR sparklines) + Pi health + connections · ESP32 relays + IR · MongoDB live counts + ingest rate · backups + config. `z` zooms one panel full screen (again = next, `Esc` = all four) |
+| `2` **Timeline** | ALL sources merged by UTC timestamp; each relay switch is matched to the most recent command telegram ("+6.1 s after telegram command (DCF49)") |
+| `3` **Telegrams** | the last 500 received telegrams: station, kind, authenticity, clock offset, decoded time, EVU, checksum, SNR, raw bytes |
+| `4` **Relays** | live K1..K4 state + today's relay events with switchover gaps (ms) |
+| `5` **Logs** | the service log, live, coloured by level |
+| `6` **Backups** | timestamped backups (scheduled + manual) and the local time archive |
+
+| Key | Action (executed by the service, never by the app itself) |
+|---|---|
+| `z` / `Esc` | zoom a quadrant of the Overview / back to the 4-panel view |
+| `b` | back up all MongoDB data now (own timestamped folder, never overwrites) |
+| `p` | probe the FRE optical (IR) port now |
+| `u` | upload the local buffer to MongoDB now |
+| `R` | restart the service (asks first) |
+| `q` | quit the app (collection continues) |
+
+The app talks to the service through a command inbox (`/var/lib/fre-platform/commands/`),
+so it never competes with the service for the receiver, the ESP32 or the IR head.
+
+| Other ways to run | |
+|---|---|
+| `fre --foreground` | no service: run everything inside the app (quitting stops collection) |
+| `fre --classic` | read-only 4-panel dashboard instead of the app |
+| `fre --plain` | scrolling SDR lines (for logs / non-interactive terminals) |
+| `fre service start\|stop\|restart\|status` | control the service |
+| `fre logs` | follow the service journal |
+| `fre backup` · `fre backups` · `fre ir-probe` · `fre relay-status` · `fre db-check` · `fre show-config` | one-shot commands |
+| `fre --help` | everything else |
 
 ## 1. Installation (Raspberry Pi, once)
 
@@ -75,8 +120,8 @@ git clone git@github.com:tarikbilla/FRE-Detection-Mitigation.git ~/Desktop/FRE-D
 cd ~/Desktop/FRE-Detection-Mitigation
 sudo deploy/install.sh --apt          # deps, venv, config file, systemd service
 sudo nano /etc/fre-platform/fre.env   # add MongoDB Atlas credentials (section 3)
-sudo systemctl restart fre-collector
-sudo systemctl status fre-collector
+sudo systemctl restart fre-platform
+sudo systemctl status fre-platform
 ```
 
 The collector then **runs continuously, starts at boot, and restarts after a
@@ -102,8 +147,8 @@ export FRE_ENV_FILE=/etc/fre-platform/fre.env
 .venv/bin/fre-platform watch
 
 # or run in the foreground with live output (Ctrl+C to stop)
-sudo systemctl stop fre-collector
-.venv/bin/fre-platform --log-level WARNING collect --live
+sudo systemctl stop fre-platform
+.venv/bin/fre-platform --log-level WARNING collect --live   # SDR only
 ```
 
 ```
@@ -134,13 +179,74 @@ Only one program can open the Airspy at a time — stop the service before a man
 ### Service control
 
 ```bash
-sudo systemctl {start,stop,restart} fre-collector
-systemctl status fre-collector
-journalctl -u fre-collector -f           # live JSON logs
+sudo systemctl {start,stop,restart} fre-platform
+systemctl status fre-platform
+journalctl -u fre-platform -f            # live JSON logs (all subsystems)
 ```
 
-Logs also go to `/var/log/fre-platform/`; a status snapshot is written to
-`/var/lib/fre-platform/status.json` and the latest block to `.../live.json`.
+Logs also go to `/var/log/fre-platform/`. State files in `/var/lib/fre-platform/`
+(read by the dashboard): `live.json` (latest SDR block), `status.json` (collector),
+`relay_live.json`, `ir_live.json`, `mongo_stats.json`, `platform.json` (thread health).
+
+---
+
+## Data storage — everything by timestamp
+
+Every record of every source carries its own UTC timestamp `ts` (ms precision; the
+Pi is NTP-synced and runs in UTC) and is saved **three times, always ordered by that time**:
+
+| Where | Layout | Purpose |
+|---|---|---|
+| **MongoDB** `fre_dataset_v2` | `_id` = `<UTC ts>|<station>|<source>|…`, e.g. `2026-11-23T15:24:27.412Z|kali-raspberrypi|DCF49|0` | the `_id` index *is* a time index: `find().sort({_id:1})` is chronological in every collection; ids stay deterministic (no duplicates on re-upload) |
+| MongoDB view **`timeline`** | telegrams + relay events + IR probes in one stream | `db.timeline.find({ts:{$gte:ISODate("2026-11-24")}}).sort({ts:1})` — broadcast vs. receiver reaction, no extra storage |
+| **Local archive** `/var/lib/fre-platform/archive/YYYY/MM/DD/<collection>.jsonl` | filed by the record's `ts` (not by write time); finished days gzip-compressed; kept forever (`FRE_ARCHIVE_KEEP_DAYS`) | complete local copy, independent of network / Atlas / quota; replay with `mongoimport` or pandas |
+| **Backups** `/var/lib/fre-platform/backups/<YYYY-MM-DDTHHMMSSZ>/` | folder = UTC start time | daily 03:30 + any manual backup, nothing is overwritten |
+| Relay ground-truth files `~/FRE-Relay-Data/relays_YYYY-MM-DD.{jsonl,csv}` | one file per UTC day | unchanged format (relay monitor) |
+
+## Relay monitor (ESP32-S3, ground truth)
+
+Integrated from *FRE-Relay-Monitor* (Rojda Özevli). Firmware:
+`firmware/esp32-relay-monitor/click_logger_multi/` (v2, flash with Arduino IDE,
+board "ESP32S3 Dev Module"). Wiring (Syna EK 393 / Langmatz LK2-E5-0455):
+
+| FRE screw | Connect to |
+|---|---|
+| 4, 7, 10, 13 (all `c`) | ESP32 GND |
+| 3 (K1 `a`), 6 (K2 `a`), 9 (K3 `a`), 12 (K4 `a`) | GPIO 4, 5, 6, 7 |
+| 5, 8, 11, 14 (`b`) | not connected |
+| **1, 2 = L/N 230 V** | **never touch** |
+
+K1 = 100 %, K2 = 60 %, K3 = 30 %, K4 = 0 % feed-in; position `a` = active, `b` = rest.
+The daily files `~/FRE-Relay-Data/relays_YYYY-MM-DD.{jsonl,csv}` keep their exact
+format (they remain the local source of truth); in addition every record is queued
+for `relay_events` (heartbeats once per hour, events always and immediately).
+Document `_id`s are identical to the former `upload_to_mongo.py`, so nothing is ever
+duplicated. Details of the record types: `docs/relay-monitor.md`.
+
+## IR probe (optical port, IEC 62056-21)
+
+Every `FRE_IR_PROBE_INTERVAL_S` (300 s) the platform sends the IEC 62056-21 sign-on
+`/?!` at 300 Bd 7E1 to the FRE's optical port; if the receiver identifies itself, it
+requests the data readout (option 0, read-only) and stores the result. **Every**
+probe is stored (`responded: false` too): on 23 Nov 2026 the unit did not answer at
+any speed/format/address (bench logs in `tools/ir-bench/`), and that behaviour over
+time is itself research evidence. Plug the head in on the Pi; it is found as
+`/dev/serial/by-id/*FTDI*` (Emlog head, FT232R).
+
+## Daily backups
+
+At `FRE_BACKUP_TIME` (03:30 local) every collection of `FRE_BACKUP_DATABASES`
+(default: the active database + legacy `fre_dataset`) is written to
+`/var/lib/fre-platform/backups/<YYYY-MM-DDTHHMMSSZ>/<db>/<collection>.jsonl.gz` (MongoDB
+Extended JSON, one document per line) with a `manifest.json` (counts, SHA-256,
+redacted settings). Unchanged collections are hard-linked to the previous day
+(no download, no extra disk). `FRE_BACKUP_KEEP_DAYS` (14) days are kept; a missed
+backup (Pi off) runs at the next start. Restore a collection:
+
+```bash
+zcat /var/lib/fre-platform/backups/2026-11-24T033000Z/fre_dataset_v2/telegrams.jsonl.gz \
+  | mongoimport --uri "$URI" -d fre_dataset_v2 -c telegrams
+```
 
 ---
 
@@ -153,7 +259,7 @@ template.
 
 ### MongoDB Atlas
 
-Create a database user with **readWrite on `fre_dataset`** only, allow the Pi's IP
+Create a database user with **readWrite on `fre_dataset_v2`** (and read on `fre_dataset` for backups), allow the Pi's IP
 in Atlas *Network Access*, then set either a full URI **or** the three parts:
 
 ```ini
@@ -162,13 +268,13 @@ FRE_MONGODB_URI=mongodb+srv://<user>:<password>@<cluster-host>/?retryWrites=true
 FRE_MONGODB_USERNAME=<user>
 FRE_MONGODB_PASSWORD=<password>
 FRE_MONGODB_HOST=cluster0.xxxxx.mongodb.net
-FRE_MONGODB_DB=fre_dataset
+FRE_MONGODB_DB=fre_dataset_v2
 ```
 
 `fre-platform db-check` must print `"ok": true`. If the URI is unset, the collector
 keeps running and buffers locally until it is configured.
 
-**Free tier (M0, 512 MB).** Defaults target ~10 MB/day (≈ 50 days). Above
+**Free tier (M0, 512 MB per cluster — all databases count, including the frozen `fre_dataset`).** Defaults target ~10 MB/day. Above
 `FRE_ATLAS_SOFT_LIMIT_PCT` (85 %) of `FRE_ATLAS_QUOTA_MB` the uploader keeps bulk
 data (spectra/observations) local and uploads only telegrams and metadata.
 
@@ -177,7 +283,7 @@ data (spectra/observations) local and uploads only telegrams and metadata.
 | Variable | Default | Meaning |
 |---|---|---|
 | `FRE_MONGODB_URI` / `_USERNAME`+`_PASSWORD`+`_HOST` | – | Atlas credentials (secret) |
-| `FRE_MONGODB_DB` | `fre_dataset` | database name |
+| `FRE_MONGODB_DB` | `fre_dataset` | database name (deployed: `fre_dataset_v2`) |
 | `FRE_SOURCE` | `airspyhf` | `airspyhf`, `simulated` or `replay` |
 | `FRE_RECEIVER_MODEL` | `Airspy HF+ Discovery` | recorded in session metadata |
 | `FRE_CENTER_FREQ_HZ` / `FRE_SAMPLE_RATE_HZ` | `108000` / `192000` | tuning / sample rate |
@@ -192,11 +298,21 @@ data (spectra/observations) local and uploads only telegrams and metadata.
 | `FRE_BATCH_SIZE` / `FRE_UPLOAD_INTERVAL_S` | `100` / `30` | upload batching |
 | `FRE_ATLAS_QUOTA_MB` / `_SOFT_LIMIT_PCT` | `512` / `85` | free-tier guard |
 | `FRE_STATION_ID`, `FRE_DATASET_VERSION`, `FRE_EXPERIMENT_ID`, `FRE_ANTENNA`, `FRE_LOCATION_LABEL` | | metadata / experimental conditions |
+| `FRE_RELAY_ENABLED` / `FRE_RELAY_PORT` | `true` / `auto` | relay monitor; `auto` = `/dev/serial/by-id/*CP210*` |
+| `FRE_RELAY_DATA_DIR` | `~/FRE-Relay-Data` | daily relay JSONL/CSV files |
+| `FRE_RELAY_STATE_UPLOAD_S` | `3600` | upload one relay heartbeat per hour |
+| `FRE_IR_ENABLED` / `FRE_IR_PORT` / `FRE_IR_PROBE_INTERVAL_S` | `true` / `auto` / `300` | IR probe |
+| `FRE_BACKUP_ENABLED` / `FRE_BACKUP_TIME` / `FRE_BACKUP_KEEP_DAYS` | `true` / `03:30` / `14` | daily backup |
+| `FRE_BACKUP_DATABASES` / `FRE_BACKUP_DIR` | active + `fre_dataset` / `<data_dir>/backups` | what / where |
+| `FRE_RELAY_EXPERIMENT_ID` / `FRE_IR_EXPERIMENT_ID` | `relay-switching-001` / `ir-optical-001` | experiment ids |
+| `FRE_ARCHIVE_ENABLED` / `FRE_ARCHIVE_DIR` / `FRE_ARCHIVE_KEEP_DAYS` | `true` / `<data_dir>/archive` / `0` (forever) | local time archive |
 | `FRE_LOG_LEVEL` / `FRE_LOG_FORMAT` | `INFO` / `json` | logging |
 
 ---
 
-## 4. Dataset schema (`fre_dataset`)
+## 4. Dataset schema (`fre_dataset_v2`)
+
+`fre_dataset` (until 23 Nov 2026) is kept unchanged as a frozen legacy database.
 
 Four collections, created automatically with JSON-schema validators and indexes.
 Every time-series document carries `schema_version`, `dataset_version`,
@@ -239,6 +355,17 @@ FT1.2 variable frame `68 L L 68 C A … CS 16`, checksum = sum(C…payload) mod 
 
 ---
 
+### `relay_events` — receiver relay switching (ground truth)
+`type` (`event`/`state`/`boot`/`logger_start`/`serial_*`/`gap`/`data_resumed`/…),
+`relay`, `position` (`a`/`b`), `level_pct`, `esp_ms` (ESP stopwatch; differences =
+switchover time to 1 ms), `K1`..`K4` (on `state`), `fw`, `clock_synced`, `raw`, `host`,
+plus the common fields (`experiment_id` = `relay-switching-001`, `source` = `relay-monitor`).
+
+### `ir_readouts` — optical-port probes
+`responded`, `echo` (head heard its own request = head OK), `ident`
+(`manufacturer`, `baud`, `ident`), `readout` (`lines`, `bcc_ok`, `raw`), `rx_hex`,
+`port`, `duration_s`, `error`.
+
 ## 5. Reliability
 
 * Every document is written to `/var/lib/fre-platform/buffer.sqlite3` (WAL, fsync)
@@ -256,7 +383,7 @@ FT1.2 variable frame `68 L L 68 C A … CS 16`, checksum = sum(C…payload) mod 
 
 ```bash
 .venv/bin/python -m pytest -q                                   # full suite (~6 min on a Pi 4)
-sudo systemctl stop fre-collector
+sudo systemctl stop fre-platform
 FRE_TEST_HARDWARE=1 .venv/bin/python -m pytest -q -m hardware   # real Airspy capture
 FRE_RUN_ATLAS_TESTS=1 FRE_ENV_FILE=/etc/fre-platform/fre.env \
   .venv/bin/python -m pytest -q -m atlas                        # real Atlas (uses fre_dataset_test, dropped after)
@@ -302,16 +429,31 @@ Bump `FRE_DATASET_VERSION` when the setup or processing changes.
 ## Project layout
 
 ```
+main.py                one-command launcher (dashboard / foreground run / every command)
 src/fre_platform/
+  service.py           integrated platform: supervised threads, shared buffer + uploader
+  tui.py               the FRE Platform app (Textual): tabs, keys, notifications
+  control.py           command inbox app -> service (backup / IR probe / upload now)
+  dashboard.py         4-panel renderers (rich), also --classic   sysinfo.py  Pi health, connections
   config.py            settings, validation, secret redaction
   logging_setup.py     JSON logging with secret redaction
   sources/             airspyhf.py, simulated.py (incl. telegram injection), replay.py
   dsp/                 features.py, demod.py (receive-only FSK 8E1 demodulator)
-  protocol/            framing.py (DIN 19244), telegram.py (decode + authenticity), synth.py (test signals)
+  protocol/            framing.py (DIN 19244), telegram.py (decode + authenticity), synth.py
+  relay/               monitor.py  ESP32 relay monitor (from FRE-Relay-Monitor)
+  ir/                  optical.py  IEC 62056-21 read-only probe (from FRE Reader)
+  backup.py            daily MongoDB backup (timestamped folders) + retention
+  archive.py           local archive: every record filed by its UTC timestamp
+  timeid.py            timestamp-first document ids
   detection/, mitigation/   phase-2 rule/ML detection + mitigation research
-  storage/             buffer.py (SQLite outbox), mongo.py (Atlas schema), uploader.py
-  pipeline.py          acquisition -> analysis -> documents -> collection loop
+  storage/             buffer.py (SQLite outbox), mongo.py (schema), uploader.py
+  pipeline.py          SDR acquisition -> analysis -> documents
   cli.py               the fre-platform command
-deploy/                fre-collector.service, install.sh
+firmware/esp32-relay-monitor/   ESP32-S3 firmware (v2) for the relay monitor
+analysis/              EFR telegram decoding / fingerprint research scripts (CSV outputs git-ignored)
+tools/ir-bench/        bench scripts + logs of the optical-port investigation (23 Nov 2026)
+docs/                  relay monitor notes, hardware photos / datasheets
+deploy/                fre-platform.service, fre-platform.desktop, install.sh (also installs `fre`)
 tests/                 pytest suite
+archive/               superseded code (old relay logger, Mac bench copy) - git-ignored
 ```
