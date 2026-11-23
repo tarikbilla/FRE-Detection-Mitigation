@@ -22,51 +22,55 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Grid, Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import (Button, DataTable, Footer, Header, Label, RichLog, Static, TabbedContent,
+from textual.widgets import (Button, DataTable, Footer, Label, RichLog, Static, TabbedContent,
                              TabPane)
 
 from . import __version__, control, dashboard, sysinfo
 from .config import Settings
 
 CSS = """
-Screen { background: #000000; color: #33ff66; }
-Header { background: #003b10; color: #7dff9b; text-style: bold; }
-Footer { background: #001a08; color: #33ff66; }
-Footer > .footer--key, FooterKey .footer-key--key { background: #00661f; color: #000000; text-style: bold; }
-FooterKey { background: #001a08; color: #33ff66; }
+Screen { background: #000000; color: #41ff7f; }
+#topbar { dock: top; height: 1; background: #04140a; }
+#alertbar { dock: top; height: 1; background: #2a0a0a; display: none; }
+#alertbar.show { display: block; }
+Footer { background: #04140a; color: #41ff7f; }
+FooterKey { background: #04140a; color: #7dff9b; }
+FooterKey .footer-key--key { background: #1fa64a; color: #001a08; text-style: bold; }
 TabbedContent { background: #000000; }
-Tabs { background: #000000; }
-Tab { color: #1f9e46; background: #000000; }
-Tab.-active { color: #000000; background: #33ff66; text-style: bold; }
-Underline > .underline--bar { color: #33ff66; background: #003b10; }
+Tabs { background: #000000; height: 2; }
+Tab { color: #46b46c; background: #000000; padding: 0 2; }
+Tab:hover { color: #d2ffdd; background: #0b2a15; }
+Tab.-active { color: #001a08; background: #39ff6a; text-style: bold; }
+Underline > .underline--bar { color: #39ff6a; background: #0b2a15; }
 TabPane { padding: 0; background: #000000; }
-#overview { grid-size: 2 2; grid-gutter: 0; height: 1fr; }
+#overview { grid-size: 2 2; grid-gutter: 0 1; height: 1fr; }
 #overview Static { height: 1fr; overflow: hidden; background: #000000; }
 #overview.zoomed { grid-size: 1 1; }
 #overview.zoomed Static { display: none; }
 #overview.zoomed Static.zoom { display: block; }
-DataTable { background: #000000; color: #33ff66; height: 1fr; scrollbar-color: #00aa33; }
-DataTable > .datatable--header { background: #003b10; color: #7dff9b; text-style: bold; }
-DataTable > .datatable--cursor { background: #00aa33; color: #000000; }
-DataTable > .datatable--hover { background: #003b10; }
+DataTable { background: #000000; color: #41ff7f; height: 1fr; scrollbar-color: #1fa64a;
+            scrollbar-background: #04140a; }
+DataTable > .datatable--header { background: #0b2a15; color: #7dff9b; text-style: bold; }
+DataTable > .datatable--cursor { background: #1fa64a; color: #001a08; text-style: bold; }
+DataTable > .datatable--hover { background: #0b2a15; }
 DataTable > .datatable--even-row { background: #020d05; }
-RichLog { background: #000000; color: #33ff66; scrollbar-color: #00aa33; }
-.bar { height: auto; max-height: 12; padding: 0 1; border: heavy #1f9e46; background: #000000; }
-.hint { color: #1f9e46; padding: 0 1; height: 1; }
-#statusline { dock: bottom; height: 1; background: #001a08; color: #1f9e46; padding: 0 1; }
-ConfirmScreen { align: center middle; background: rgba(0, 0, 0, 0.7); }
-#dialog { width: 64; height: auto; border: heavy #33ff66; background: #000000; padding: 1 2; }
-#dialog Label { width: 100%; content-align: center middle; color: #7dff9b; margin-bottom: 1; }
+RichLog { background: #000000; color: #41ff7f; scrollbar-color: #1fa64a; scrollbar-background: #04140a;
+          border: round #1fa64a; }
+.bar { height: auto; max-height: 12; padding: 0 1; border: round #1fa64a; background: #000000; }
+.hint { color: #46b46c; padding: 0 1; height: 1; }
+ConfirmScreen { align: center middle; background: rgba(0, 0, 0, 0.75); }
+#dialog { width: 64; height: auto; border: round #39ff6a; background: #000000; padding: 1 2; }
+#dialog Label { width: 100%; content-align: center middle; color: #d2ffdd; margin-bottom: 1; }
 #dialog Horizontal { height: auto; align: center middle; }
-Button { margin: 0 2; background: #003b10; color: #33ff66; border: tall #1f9e46; }
-Button:hover { background: #00661f; }
+Button { margin: 0 2; background: #0b2a15; color: #7dff9b; border: tall #1fa64a; }
+Button:hover { background: #1fa64a; color: #001a08; }
 Button.-error { background: #3b0000; color: #ff5555; border: tall #aa0000; }
 """
 
-LEVEL_STYLE = {"DEBUG": "dark_green", "INFO": "green", "WARNING": "yellow", "ERROR": "bold red",
-               "CRITICAL": "bold white on red"}
-ASSESS_STYLE = {"authentic_candidate": "bright_green", "implausible": "bold red", "integrity_fail": "bold red",
-                "unverified": "yellow"}
+LEVEL_STYLE = {"DEBUG": "#46b46c", "INFO": "#41ff7f", "WARNING": "bold #ffd166", "ERROR": "bold #ff5555",
+               "CRITICAL": "bold #ffffff on #c0392b"}
+ASSESS_STYLE = {"authentic_candidate": "#7dff9b", "implausible": "bold #ff5555", "integrity_fail": "bold #ff5555",
+                "unverified": "bold #ffd166"}
 
 
 def _load(path: Path):
@@ -129,7 +133,8 @@ class FreApp(App):
 
     # ------------------------------------------------------------ layout
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield Static(id="topbar")
+        yield Static(id="alertbar")
         with TabbedContent(initial="overview-tab"):
             with TabPane("1 OVERVIEW", id="overview-tab"):
                 with Grid(id="overview"):
@@ -152,7 +157,6 @@ class FreApp(App):
                 yield Static(classes="bar", id="backup-info")
                 yield DataTable(id="backup-table", zebra_stripes=True, cursor_type="row")
                 yield Static(classes="bar", id="archive-info")
-        yield Static(id="statusline")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -192,17 +196,14 @@ class FreApp(App):
             if w.size.height:
                 panel.height = w.size.height
             w.update(panel)
-        age = dashboard._age_s((plat or {}).get("updated_at"))
-        alive = age is not None and age < 20
         svc = sysinfo.service_state() if self.mode == "service" else "foreground"
-        line = Text()
-        line.append(" core ", style="dark_green")
-        line.append("ALIVE" if alive else "NO HEARTBEAT", style="bold bright_green" if alive else "bold red")
-        line.append("   service ", style="dark_green")
-        line.append(svc.upper(), style="bold bright_green" if svc in ("active", "foreground") else "bold yellow")
-        line.append(f"   data {d}   logs {self.cfg.log_dir or d / 'logs'}   receive-only · nothing is transmitted",
-                    style="dark_green")
-        self.query_one("#statusline", Static).update(line)
+        states = dashboard.health(self.cfg, sysi)
+        self.query_one("#topbar", Static).update(dashboard.header(self.cfg, plat, svc, states))
+        warn = dashboard.alerts(states)
+        bar = self.query_one("#alertbar", Static)
+        bar.set_class(warn is not None, "show")
+        if warn is not None:
+            bar.update(warn)
 
     # ------------------------------------------------------------ tables
     def refresh_tables(self) -> None:
@@ -220,7 +221,7 @@ class FreApp(App):
         self.query_one("#tg-hint", Static).update(Text(
             f"latest {len(tgs)} received telegrams (newest first) · since start: {tot.get('total', 0)} total, "
             f"{tot.get('time', 0)} time, {tot.get('suspect', 0)} suspect · "
-            "time telegram = German local time, compared with the Pi's NTP clock", style="dark_green"))
+            "time telegram = German local time, compared with the Pi's NTP clock", style="#46b46c"))
         if stamp == self._tg_stamp:
             return
         self._tg_stamp = stamp
@@ -230,11 +231,11 @@ class FreApp(App):
             a = tg.get("assessment") or "-"
             off = tg.get("clock_offset_s")
             t.add_row(tg.get("ts", "")[:19].replace("T", " "), tg.get("channel", ""), tg.get("kind", ""),
-                      Text(a, style=ASSESS_STYLE.get(a, "green")),
+                      Text(a, style=ASSESS_STYLE.get(a, "#41ff7f")),
                       Text(f"{off:+.1f}" if isinstance(off, (int, float)) else "-",
-                           style="bold red" if isinstance(off, (int, float)) and abs(off) > 5 else "green"),
+                           style="bold #ff5555" if isinstance(off, (int, float)) and abs(off) > 5 else "#41ff7f"),
                       (tg.get("time") or "-")[:19].replace("T", " "), tg.get("evu") or "-",
-                      Text("ok", style="bright_green") if tg.get("checksum_ok") else Text("BAD", style="bold red"),
+                      Text("ok", style="#7dff9b") if tg.get("checksum_ok") else Text("BAD", style="bold #ff5555"),
                       f"{tg['snr_db']:.1f}" if isinstance(tg.get("snr_db"), (int, float)) else "-",
                       (tg.get("raw_hex") or "")[:48])
 
@@ -242,20 +243,20 @@ class FreApp(App):
         live = _load(self.data / "relay_live.json") or {}
         pos = live.get("positions") or {}
         now = Text()
-        now.append("ESP32 ", style="dark_green")
+        now.append("ESP32 ", style="#46b46c")
         now.append("CONNECTED" if live.get("connected") else "DISCONNECTED",
-                   style="bold bright_green" if live.get("connected") else "bold red")
+                   style="bold #39ff6a" if live.get("connected") else "bold #ff5555")
         now.append(f"   fw {live.get('fw') or '?'}   last line {dashboard._ago(live.get('last_line_ts'))}   "
-                   f"events today {live.get('events_today', 0)}\n", style="green")
+                   f"events today {live.get('events_today', 0)}\n", style="#41ff7f")
         for r, lvl in (("K1", "100 %"), ("K2", " 60 %"), ("K3", " 30 %"), ("K4", "  0 %")):
             p = pos.get(r)
-            now.append(f" {r} {lvl} ", style="green")
+            now.append(f" {r} {lvl} ", style="#41ff7f")
             now.append(f"[{'■ ACTIVE a' if p == 'a' else '□ rest   b' if p == 'b' else '?  unknown'}]",
-                       style="bold black on bright_green" if p == "a" else "green")
+                       style="bold #001a08 on #39ff6a" if p == "a" else "#41ff7f")
             now.append("   ")
         lvl = live.get("level_pct")
         now.append(f"\n requested feed-in: {f'{lvl} %' if lvl is not None else 'ambiguous (all a / switching)'}",
-                   style="bold bright_green" if lvl is not None else "yellow")
+                   style="bold #39ff6a" if lvl is not None else "bold #ffd166")
         self.query_one("#relay-now", Static).update(now)
 
         files = sorted(Path(self.cfg.relay_data_dir).glob("relays_*.jsonl"))
@@ -292,7 +293,7 @@ class FreApp(App):
             out.append((r, gap))
         for r, gap in reversed(out[-500:]):
             ev = r.get("type") == "event"
-            style = "bold bright_green" if ev and r.get("position") == "a" else "green" if ev else "dark_green"
+            style = "bold #39ff6a" if ev and r.get("position") == "a" else "#41ff7f" if ev else "#46b46c"
             t.add_row(Text(r.get("ts_utc", "")[:23].replace("T", " "), style=style), Text(r.get("type", ""), style=style),
                       r.get("relay") or "", Text(r.get("position") or "", style=style),
                       f"{r['level_pct']} %" if r.get("level_pct") is not None else "",
@@ -303,16 +304,16 @@ class FreApp(App):
         plat = _load(self.data / "platform.json") or {}
         bk = (plat.get("subsystems") or {}).get("backup") or {}
         info = Text()
-        info.append("daily at ", style="dark_green")
-        info.append(f"{self.cfg.backup_time}", style="bright_green")
+        info.append("daily at ", style="#46b46c")
+        info.append(f"{self.cfg.backup_time}", style="#7dff9b")
         info.append(f"   next {(bk.get('next_run') or '-').replace('T', ' ')[:16]}   keep {self.cfg.backup_keep_days} days"
-                    f"   databases {', '.join(self.cfg.backup_db_list)}\n", style="green")
-        info.append(f"dir {self.cfg.backup_path}   ", style="green")
-        info.append("RUNNING ..." if bk.get("running") else "idle", style="bold yellow" if bk.get("running") else "green")
+                    f"   databases {', '.join(self.cfg.backup_db_list)}\n", style="#41ff7f")
+        info.append(f"dir {self.cfg.backup_path}   ", style="#41ff7f")
+        info.append("RUNNING ..." if bk.get("running") else "idle", style="bold #ffd166" if bk.get("running") else "#41ff7f")
         if bk.get("last_error"):
-            info.append(f"   last error: {bk['last_error'][:90]}", style="bold red")
+            info.append(f"   last error: {bk['last_error'][:90]}", style="bold #ff5555")
         info.append("\nrestore: zcat <day>/<db>/<collection>.jsonl.gz | mongoimport --uri \"$URI\" -d <db> -c <collection>"
-                    "      press b to back up now", style="dark_green")
+                    "      press b to back up now", style="#46b46c")
         self.query_one("#backup-info", Static).update(info)
         self._refresh_archive()
         backups = list_backups(self.cfg)
@@ -323,8 +324,8 @@ class FreApp(App):
         t = self.query_one("#backup-table", DataTable)
         t.clear()
         for b in backups:
-            t.add_row(Text(dashboard._stamp(b["name"]), style="bright_green"), b.get("trigger") or "",
-                      Text("OK", style="bold bright_green") if b.get("ok") else Text("FAILED", style="bold red"),
+            t.add_row(Text(dashboard._stamp(b["name"]), style="#7dff9b"), b.get("trigger") or "",
+                      Text("OK", style="bold #39ff6a") if b.get("ok") else Text("FAILED", style="bold #ff5555"),
                       f"{b.get('documents') or 0:,}", dashboard._bytes(b.get("bytes")),
                       f"{b.get('duration_s') or 0:.0f} s", ", ".join(b["databases"]), b["name"])
 
@@ -332,16 +333,16 @@ class FreApp(App):
         from .archive import TimeArchive
         arc = TimeArchive(self.cfg.archive_path)
         t = Text()
-        t.append("LOCAL ARCHIVE ", style="bold bright_green")
+        t.append("LOCAL ARCHIVE ", style="bold #39ff6a")
         t.append(f"{self.cfg.archive_path}/YYYY/MM/DD/<collection>.jsonl[.gz]   every record filed by its own UTC "
                  f"timestamp · keep {'forever' if not self.cfg.archive_keep_days else f'{self.cfg.archive_keep_days} d'}\n",
-                 style="green")
+                 style="#41ff7f")
         days = arc.summary(days=5)
         if not days:
-            t.append("  no archived records yet", style="yellow")
+            t.append("  no archived records yet", style="bold #ffd166")
         for d in days:
-            t.append(f"  {d['day']}  {dashboard._bytes(d['bytes']):>9}  ", style="bright_green")
-            t.append(" ".join(f.replace(".jsonl", "") for f in d["files"]) + "\n", style="dark_green")
+            t.append(f"  {d['day']}  {dashboard._bytes(d['bytes']):>9}  ", style="#7dff9b")
+            t.append(" ".join(f.replace(".jsonl", "") for f in d["files"]) + "\n", style="#46b46c")
         self.query_one("#archive-info", Static).update(t)
 
     # ---------------------------------------------------------- timeline
@@ -358,7 +359,7 @@ class FreApp(App):
         for tg in (_load(self.data / "telegrams_recent.json") or {}).get("telegrams", []):
             off = tg.get("clock_offset_s")
             ev.append({"ts": self._parse_ts(tg.get("ts")), "source": "SDR", "event": f"telegram {tg.get('kind')}",
-                       "kind": tg.get("kind"), "style": "bright_green" if tg.get("kind") != "time" else "dark_green",
+                       "kind": tg.get("kind"), "style": "#7dff9b" if tg.get("kind") != "time" else "#46b46c",
                        "detail": f"{tg.get('channel')}  {tg.get('assessment') or '-'}"
                                  + (f"  clock {off:+.1f}s" if isinstance(off, (int, float)) else "")
                                  + (f"  evu {tg['evu']}" if tg.get("evu") else "")
@@ -381,12 +382,12 @@ class FreApp(App):
                 else:
                     detail = r.get("detail") or r.get("fw") or ""
                 ev.append({"ts": self._parse_ts(r.get("ts_utc")), "source": "RELAY", "event": r.get("type"),
-                           "detail": detail, "style": "bold bright_green" if r.get("type") == "event" else "green"})
+                           "detail": detail, "style": "bold #39ff6a" if r.get("type") == "event" else "#41ff7f"})
         for pr in (_load(self.data / "ir_live.json") or {}).get("recent", []):
             ev.append({"ts": self._parse_ts(pr.get("ts")), "source": "IR",
                        "event": "ir answer" if pr.get("responded") else "ir probe",
                        "detail": pr.get("ident") or pr.get("error") or ("no answer, echo ok" if pr.get("echo") else "no answer"),
-                       "style": "bold bright_green" if pr.get("responded") else "dark_green"})
+                       "style": "bold #39ff6a" if pr.get("responded") else "#46b46c"})
         ev = [e for e in ev if e["ts"] is not None]
         ev.sort(key=lambda e: e["ts"])
         last_cmd = None
@@ -404,7 +405,7 @@ class FreApp(App):
         self.query_one("#tl-hint", Static).update(Text(
             f"{len(ev)} events from all sources, ordered by UTC timestamp (newest first) · relay switches are matched to "
             "the most recent command telegram within 300 s · same data as the MongoDB view 'timeline'",
-            style="dark_green"))
+            style="#46b46c"))
         stamp = (len(ev), ev[-1]["ts"] if ev else None)
         if stamp == self._timeline_stamp:
             return
@@ -415,7 +416,7 @@ class FreApp(App):
             st = e["style"]
             t.add_row(Text(e["ts"].strftime("%Y-%m-%d %H:%M:%S.%f")[:23], style=st), Text(e["source"], style=st),
                       Text(e["event"] or "", style=st), Text(e["detail"][:110], style=st),
-                      Text(e.get("corr", ""), style="bold yellow"))
+                      Text(e.get("corr", ""), style="bold #ffd166"))
 
     # ------------------------------------------------------------- zoom
     def action_zoom(self) -> None:
@@ -444,7 +445,7 @@ class FreApp(App):
             st = path.stat()
         except OSError:
             if self._log_pos == 0:
-                log.write(Text(f"log file {path} not found yet", style="yellow"))
+                log.write(Text(f"log file {path} not found yet", style="bold #ffd166"))
                 self._log_pos = -1
             return
         if self._log_inode != st.st_ino or st.st_size < self._log_pos:  # rotated
@@ -464,16 +465,16 @@ class FreApp(App):
         try:
             d = json.loads(raw)
         except ValueError:
-            return Text(raw[:300], style="green")
+            return Text(raw[:300], style="#41ff7f")
         lvl = d.get("level", "INFO")
         extra = {k: v for k, v in d.items() if k not in ("ts", "level", "logger", "msg", "settings", "exc")}
         t = Text()
-        t.append(d.get("ts", "")[11:23] + " ", style="dark_green")
-        t.append(f"{lvl:<7} ", style=LEVEL_STYLE.get(lvl, "green"))
-        t.append(f"{d.get('logger', '').replace('fre_platform.', ''):<18} ", style="dark_green")
-        t.append(d.get("msg", ""), style=LEVEL_STYLE.get(lvl, "green") if lvl != "INFO" else "bright_green")
+        t.append(d.get("ts", "")[11:23] + " ", style="#46b46c")
+        t.append(f"{lvl:<7} ", style=LEVEL_STYLE.get(lvl, "#41ff7f"))
+        t.append(f"{d.get('logger', '').replace('fre_platform.', ''):<18} ", style="#46b46c")
+        t.append(d.get("msg", ""), style=LEVEL_STYLE.get(lvl, "#41ff7f") if lvl != "INFO" else "#7dff9b")
         if extra:
-            t.append("  " + json.dumps(extra, default=str)[:220], style="green")
+            t.append("  " + json.dumps(extra, default=str)[:220], style="#41ff7f")
         if d.get("exc"):
             t.append("\n" + d["exc"][-800:], style="red")
         return t
