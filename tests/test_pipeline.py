@@ -1,6 +1,8 @@
 """End-to-end: simulated receiver -> analysis -> buffer -> uploader -> (mongomock) MongoDB."""
 import json
 
+import pytest
+
 from fre_platform.pipeline import Collector
 from fre_platform.sources.simulated import SimulatedSource
 from fre_platform.storage.buffer import LocalBuffer
@@ -18,7 +20,8 @@ def test_end_to_end_research_dataset(cfg, tmp_path, mongomock_store):
     assert stats["blocks"] == 40 and stats["errors"] == 0
     assert buf.count() == 0, "buffer must be drained after final flush"
     # Clean research schema: only the four research collections exist, no detections/models/etc.
-    assert set(db.list_collection_names()) <= {"sessions", "observations", "spectra", "telegrams"}
+    assert set(db.list_collection_names()) <= {"sessions", "observations", "spectra", "telegrams",
+                                                "relay_events", "ir_readouts"}
     assert db.observations.count_documents({}) == 40 * len(cfg.channels)
     assert db.spectra.count_documents({}) == 40          # keep_all -> one spectrum per block
     assert db.sessions.count_documents({}) == 1
@@ -47,6 +50,8 @@ def test_telegrams_decoded_and_stored(cfg, tmp_path, mongomock_store):
 
     db = mongomock_store.db
     assert stats["telegrams"] > 0 and stats["telegrams_time"] > 0
+    ids = [d["_id"] for d in db.telegrams.find({}, {"_id": 1})]
+    assert all(i[:4] == "2026" or i[:2] == "20" for i in ids) and all(i[23] == "Z" for i in ids)  # timestamp-first
     tg = db.telegrams.find_one({"kind": "time"})
     assert tg is not None and tg["checksum_ok"] and tg["evu_address"] == "0000"
     assert tg["time"]["year"] >= 2024 and tg["raw_hex"].startswith("68")
@@ -99,23 +104,54 @@ def test_live_output(cfg, tmp_path):
 def test_run_command_collects_and_stops(tmp_path, monkeypatch, capsys):
     """`main.py` / `fre-platform run` in the foreground with a simulated receiver."""
     from fre_platform import cli
-    monkeypatch.setattr(cli, "_service_active", lambda: False)
+    monkeypatch.setattr(cli, "_service_active", lambda *a: False)
     for k, v in {"FRE_SOURCE": "simulated", "FRE_BLOCK_SECONDS": "0.5", "FRE_DATA_DIR": str(tmp_path),
-                 "FRE_MODEL_PATH": str(tmp_path / "m.joblib"), "FRE_SIM_SCENARIO": "normal"}.items():
+                 "FRE_MODEL_PATH": str(tmp_path / "m.joblib"), "FRE_SIM_SCENARIO": "normal",
+                 "FRE_RELAY_ENABLED": "false", "FRE_IR_ENABLED": "false"}.items():
         monkeypatch.setenv(k, v)
     rc = cli.main(["run", "--foreground", "--no-upload", "--max-blocks", "3"])
     out = capsys.readouterr().out
-    assert rc == 0 and "stopped. blocks=3" in out and "DCF49" in out
+    live = (tmp_path / "live.json").read_text()
+    assert rc == 0 and "stopped. blocks=3" in out and "DCF49" in live
+    assert (tmp_path / "platform.json").is_file()
 
 
 def test_run_attaches_when_service_active(monkeypatch):
-    from fre_platform import cli
-    monkeypatch.setattr(cli, "_service_active", lambda: True)
+    """With the service running, `run` only opens the app (no second collector)."""
+    import sys
+    from fre_platform import cli, tui
+    monkeypatch.setattr(cli, "_service_active", lambda name="fre-platform": name == "fre-platform")
+    monkeypatch.setattr(cli, "_service_installed", lambda *a: True)
+    monkeypatch.setattr(cli, "_systemctl", lambda *a: pytest.fail("must not start a running service"))
     called = {}
+    monkeypatch.setattr(tui, "run_tui", lambda cfg, mode, platform=None: called.setdefault("app", mode) and 0)
     monkeypatch.setattr(cli, "cmd_watch", lambda a: called.setdefault("watch", True) and 0)
-    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     monkeypatch.setenv("FRE_SOURCE", "simulated")
-    assert cli.main(["run"]) == 0 and called.get("watch")
+    assert cli.main(["run"]) == 0 and called.get("app") == "service"
+    assert cli.main(["run", "--plain"]) == 0 and called.get("watch")
+
+
+def test_run_starts_stopped_service_then_opens_app(monkeypatch):
+    """ONE command: a stopped service is started, then the app opens."""
+    import sys
+    from fre_platform import cli, tui
+    calls = []
+    monkeypatch.setattr(cli, "_service_active", lambda name="fre-platform": False)
+    monkeypatch.setattr(cli, "_service_installed", lambda *a: True)
+    monkeypatch.setattr(cli, "_systemctl", lambda action, name="fre-platform": calls.append(action) or (True, ""))
+    monkeypatch.setattr(cli, "_wait_heartbeat", lambda cfg, timeout=60: True)
+    monkeypatch.setattr(tui, "run_tui", lambda cfg, mode, platform=None: calls.append(f"app:{mode}") or 0)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setenv("FRE_SOURCE", "simulated")
+    assert cli.main(["run"]) == 0 and calls == ["start", "app:service"]
+
+
+def test_run_refuses_while_legacy_services_hold_hardware(monkeypatch, capsys):
+    from fre_platform import cli
+    monkeypatch.setattr(cli, "_service_active", lambda name="fre-platform": name == "fre-relay-logger")
+    monkeypatch.setenv("FRE_SOURCE", "simulated")
+    assert cli.main(["run"]) == 1 and "fre-relay-logger" in capsys.readouterr().err
 
 
 def test_sampling_reduces_volume_for_live_data(cfg, tmp_path):

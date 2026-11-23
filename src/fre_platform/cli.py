@@ -228,78 +228,193 @@ def cmd_watch(args) -> int:
         return 0
 
 
-def _service_active() -> bool:
-    """True if the systemd collector service is running (it owns the receiver)."""
+SERVICE_NAME = "fre-platform"
+LEGACY_SERVICES = ("fre-collector", "fre-relay-logger")
+
+
+def _service_active(name: str = SERVICE_NAME) -> bool:
+    """True if the systemd service is running (it owns the receiver, ESP32 and IR head)."""
     import subprocess
     try:
-        return subprocess.run(["systemctl", "is-active", "--quiet", "fre-collector"],
+        return subprocess.run(["systemctl", "is-active", "--quiet", name],
                               stdin=subprocess.DEVNULL, timeout=5).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
 
 
-def cmd_run(args) -> int:
-    """Start the whole application: collector + live dashboard in one process.
+def _service_installed(name: str = SERVICE_NAME) -> bool:
+    return Path(f"/etc/systemd/system/{name}.service").is_file()
 
-    If the background service already runs (it holds the receiver), attach to
-    its live view instead of starting a competing second instance.
-    """
-    import time
-    if not args.foreground and _service_active():
-        print("fre-collector service is running - showing its live view "
-              "(Ctrl+C closes the view; the service keeps collecting).", flush=True)
-        time.sleep(1.5)
-        args.interval = 0.5
-        return cmd_watch(args)
 
-    from .pipeline import Collector
-    from .sources import create_source
-    cfg = _settings(args)
-    buffer = _buffer(cfg)
-    source = create_source(cfg)
-    stop = threading.Event()
-    _install_signal_handlers(stop)
-    latest: dict = {}
-    collector = Collector(cfg, source, buffer, _uploader(cfg, buffer, not args.no_upload), _models(cfg),
-                          on_block=lambda s: latest.__setitem__("s", s))
-    failure: dict = {}
-
-    def _collect():
-        try:
-            collector.run(stop, max_blocks=args.max_blocks)
-        except Exception as exc:  # surfaced on screen below; full trace goes to the log file
-            log.exception("collector stopped with an error")
-            failure["error"] = redact_text(f"{type(exc).__name__}: {exc}")
-        finally:
-            stop.set()
-
-    worker = threading.Thread(target=_collect, name="collector", daemon=True)
-    worker.start()
-    color = sys.stdout.isatty() and not args.plain
-    last_seq = None
+def _systemctl(action: str, name: str = SERVICE_NAME) -> tuple[bool, str]:
+    import subprocess
     try:
-        while not stop.is_set():
-            s = latest.get("s")
-            if color:
-                panel = format_dashboard(s, color) if s else "  starting receiver ..."
-                sys.stdout.write("\033[H\033[2J" + panel + "\n")
-                sys.stdout.flush()
-            elif s and s["seq"] != last_seq:
-                last_seq = s["seq"]
-                print(format_live(s, False), flush=True)
-            time.sleep(0.5)
-    except KeyboardInterrupt:
-        stop.set()
-    print("\nstopping - finishing the current block and uploading buffered data ...", flush=True)
-    worker.join(timeout=90)
-    buffer.close()
-    if failure:
-        print(f"ERROR: {failure['error']}  (details: logs in {cfg.log_dir or Path(cfg.data_dir) / 'logs'})",
-              file=sys.stderr)
+        r = subprocess.run(["sudo", "-n", "systemctl", action, name], capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+    return r.returncode == 0, (r.stderr or r.stdout).strip()
+
+
+def _wait_heartbeat(cfg: Settings, timeout: float = 60.0) -> bool:
+    """Wait until the platform publishes a fresh platform.json."""
+    import time
+    path = Path(cfg.data_dir) / "platform.json"
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        try:
+            if path.stat().st_mtime >= t0 - 1:
+                return True
+        except OSError:
+            pass
+        time.sleep(0.5)
+    return False
+
+
+def _open_ui(cfg: Settings, mode: str, platform=None, classic: bool = False) -> int:
+    if not classic:
+        try:
+            from .tui import run_tui
+        except ImportError:  # textual missing: fall back to the rich dashboard
+            log.warning("textual not installed; using the classic dashboard (apt install python3-textual)")
+        else:
+            return run_tui(cfg, mode=mode, platform=platform)
+    from .dashboard import run_dashboard
+    return run_dashboard(cfg, stop=platform.stop_evt if platform else None)
+
+
+def cmd_run(args) -> int:
+    """ONE command for everything: make sure the platform runs, then open the app.
+
+    * service installed  -> start it if needed, wait for its heartbeat, open the app;
+                            quitting the app leaves collection running
+    * no service / --foreground -> run every subsystem in this process + the app;
+                            quitting stops collection
+    """
+    cfg = _settings(args)
+    interactive = sys.stdout.isatty() and not args.plain
+    busy = [n for n in LEGACY_SERVICES if _service_active(n)]
+    if busy:
+        print(f"legacy service(s) {', '.join(busy)} still running and holding the hardware. "
+              f"Stop them first: sudo systemctl disable --now {' '.join(busy)}", file=sys.stderr)
         return 1
-    st = collector.stats
-    print(f"stopped. blocks={st['blocks']} observations={st['observations']} spectra={st['spectra']} "
-          f"telegrams={st['telegrams']} (time {st['telegrams_time']}, suspect {st['telegrams_suspect']})")
+
+    if not args.foreground and _service_installed():
+        if not _service_active():
+            print("▶ starting the fre-platform service ...", flush=True)
+            ok, msg = _systemctl("start")
+            if not ok:
+                print(f"could not start the service: {msg}\n"
+                      f"start it manually (sudo systemctl start {SERVICE_NAME}) or run: main.py --foreground",
+                      file=sys.stderr)
+                return 1
+            print("  waiting for the first heartbeat (receiver, ESP32, IR head, MongoDB) ...", flush=True)
+            if not _wait_heartbeat(cfg):
+                print("  no heartbeat after 60 s - opening the app anyway; check the Logs tab", flush=True)
+        if not interactive:
+            return cmd_watch(args)
+        return _open_ui(cfg, "service", classic=args.classic)
+
+    if not args.foreground and _service_active():  # service running but unit file elsewhere
+        return _open_ui(cfg, "service", classic=args.classic) if interactive else cmd_watch(args)
+
+    from .service import Platform
+    platform = Platform(cfg, models=_models(cfg), upload=not args.no_upload, max_blocks=args.max_blocks)
+    _install_signal_handlers(platform.stop_evt)
+    platform.start()
+    keeper = threading.Thread(target=platform.run_forever, name="health", daemon=True)
+    keeper.start()
+    try:
+        if interactive:
+            _open_ui(cfg, "foreground", platform=platform, classic=args.classic)
+        else:
+            platform.stop_evt.wait()
+    except KeyboardInterrupt:
+        pass
+    print("\nstopping - finishing the current block and uploading buffered data ...", flush=True)
+    platform.shutdown()
+    col = platform.sdr.collector if platform.sdr else None
+    if col is not None:
+        st = col.stats
+        print(f"stopped. blocks={st['blocks']} observations={st['observations']} spectra={st['spectra']} "
+              f"telegrams={st['telegrams']} (time {st['telegrams_time']}, suspect {st['telegrams_suspect']})")
+    return 0
+
+
+def cmd_service(args) -> int:
+    """start / stop / restart / status of the fre-platform service."""
+    import subprocess
+    if args.action == "status":
+        return subprocess.run(["systemctl", "--no-pager", "status", SERVICE_NAME]).returncode
+    ok, msg = _systemctl(args.action)
+    print(f"{args.action}: {'ok' if ok else 'FAILED'} {msg}".rstrip())
+    return 0 if ok else 1
+
+
+def cmd_logs(args) -> int:
+    import subprocess
+    return subprocess.run(["journalctl", "-u", SERVICE_NAME, "-f", "-n", str(args.lines), "-o", "cat"]).returncode
+
+
+def cmd_serve(args) -> int:
+    """Service entry point: run every subsystem until SIGTERM (systemd)."""
+    from .service import Platform
+    cfg = _settings(args)
+    platform = Platform(cfg, models=_models(cfg), upload=not args.no_upload, sdr=not args.no_sdr)
+    _install_signal_handlers(platform.stop_evt)
+    platform.start()
+    try:
+        platform.run_forever()
+    finally:
+        platform.shutdown()
+    return 0
+
+
+def cmd_dashboard(args) -> int:
+    from .dashboard import run_dashboard
+    return run_dashboard(_settings(args), interval=args.interval)
+
+
+def cmd_backup(args) -> int:
+    from .backup import run_backup
+    cfg = _settings(args)
+    if not cfg.mongodb_configured:
+        print("MongoDB is not configured", file=sys.stderr)
+        return 2
+    m = run_backup(cfg, day=args.day)
+    _print({k: m.get(k) for k in ("name", "day", "ok", "documents", "bytes", "linked", "duration_s", "removed_old")}
+           | {"path": str(cfg.backup_path / m["name"])})
+    return 0 if m.get("ok") else 1
+
+
+def cmd_backups(args) -> int:
+    from .backup import list_backups
+    cfg = _settings(args)
+    _print({"dir": str(cfg.backup_path), "time": cfg.backup_time, "keep_days": cfg.backup_keep_days,
+            "databases": cfg.backup_db_list, "backups": list_backups(cfg)})
+    return 0
+
+
+def cmd_ir_probe(args) -> int:
+    """One read-only IEC 62056-21 sign-on to the FRE's optical port (and readout if it answers)."""
+    from .ir.optical import PORT_GLOBS, probe_once
+    from .relay.monitor import resolve_port
+    cfg = _settings(args)
+    port = args.port or resolve_port(cfg.ir_port, PORT_GLOBS)
+    if not port:
+        print("no IR head found (/dev/serial/by-id/*FTDI*); plug it in or pass --port", file=sys.stderr)
+        return 2
+    res = probe_once(port)
+    _print(res)
+    return 0 if res.get("responded") else 1
+
+
+def cmd_relay_status(args) -> int:
+    cfg = _settings(args)
+    path = Path(cfg.data_dir) / "relay_live.json"
+    if not path.is_file():
+        print(f"{path} not found - is the platform running?", file=sys.stderr)
+        return 1
+    _print(json.loads(path.read_text()))
     return 0
 
 
@@ -484,13 +599,43 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--live", action="store_true", help="print every received block to the console")
     s.set_defaults(func=cmd_collect)
 
-    s = sub.add_parser("run", help="start the application: collector + live dashboard (default for main.py)")
+    s = sub.add_parser("run", help="ONE command: start everything if needed and open the app (default)")
     s.add_argument("--foreground", action="store_true",
-                   help="collect in this process even if the systemd service is running (stop the service first)")
+                   help="run in this process even if the systemd service is running (stop the service first)")
     s.add_argument("--no-upload", action="store_true", help="buffer locally only")
-    s.add_argument("--plain", action="store_true", help="scrolling lines instead of the full-screen dashboard")
+    s.add_argument("--plain", action="store_true", help="no full-screen app (scrolling SDR lines)")
+    s.add_argument("--classic", action="store_true", help="read-only 4-panel dashboard instead of the app")
+    s.add_argument("--interval", type=float, default=0.5, help=argparse.SUPPRESS)
     s.add_argument("--max-blocks", type=int, help=argparse.SUPPRESS)
     s.set_defaults(func=cmd_run)
+
+    s = sub.add_parser("service", help="start / stop / restart / status of the fre-platform service")
+    s.add_argument("action", choices=("start", "stop", "restart", "status"))
+    s.set_defaults(func=cmd_service)
+
+    s = sub.add_parser("logs", help="follow the service log (journal)")
+    s.add_argument("-n", "--lines", type=int, default=50)
+    s.set_defaults(func=cmd_logs)
+
+    s = sub.add_parser("serve", help="service entry point: SDR + relay monitor + IR probe + uploads + backups")
+    s.add_argument("--no-upload", action="store_true", help="buffer locally only")
+    s.add_argument("--no-sdr", action="store_true", help="run without the Airspy collector")
+    s.set_defaults(func=cmd_serve)
+
+    s = sub.add_parser("dashboard", help="4-panel live dashboard for the running service")
+    s.add_argument("--interval", type=float, default=1.0, help="refresh interval in seconds")
+    s.set_defaults(func=cmd_dashboard)
+
+    s = sub.add_parser("backup", help="back up all configured MongoDB databases to the backup dir now")
+    s.add_argument("--day", help="local day the backup counts for (default: today, YYYY-MM-DD)")
+    s.set_defaults(func=cmd_backup)
+    sub.add_parser("backups", help="list local backups").set_defaults(func=cmd_backups)
+
+    s = sub.add_parser("ir-probe", help="one read-only IEC 62056-21 probe of the FRE optical port")
+    s.add_argument("--port", help="serial port of the IR head (default: auto, FTDI)")
+    s.set_defaults(func=cmd_ir_probe)
+    sub.add_parser("relay-status", help="current K1..K4 relay state from the running service").set_defaults(
+        func=cmd_relay_status)
 
     s = sub.add_parser("watch", help="live reception dashboard for the running collector/service")
     s.add_argument("--interval", type=float, default=0.3, help="refresh interval in seconds")
@@ -553,7 +698,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     # The full-screen dashboards (run/watch on a terminal) log to a file only, so
     # log lines don't scramble the screen.
-    dashboard = args.command in ("run", "watch") and sys.stdout.isatty() and not getattr(args, "plain", False)
+    dashboard = (args.command in ("run", "watch", "dashboard") and sys.stdout.isatty()
+                 and not getattr(args, "plain", False))
     log_dir = cfg.log_dir or (Path(cfg.data_dir) / "logs" if dashboard else None)
     setup_logging(args.log_level or cfg.log_level, args.log_format or cfg.log_format, log_dir,
                   console=not dashboard)
