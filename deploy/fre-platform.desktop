@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=FRE Platform
+GenericName=FRE Detection & Mitigation
+Comment=Start the FRE research platform (SDR, relay monitor, IR probe, MongoDB, backups) and open the live app
+Exec=x-terminal-emulator -e @BIN@
+Icon=utilities-system-monitor
+Terminal=false
+Categories=Science;Utility;Network;
+Keywords=FRE;SDR;ripple;relay;MongoDB;
+StartupNotify=true

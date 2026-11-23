@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fre-platform"
-version = "1.0.0"
-description = "Receive-only FRE (radio ripple control) detection & mitigation research platform"
+version = "2.2.0"
+description = "Receive-only FRE (radio ripple control) research platform: SDR telegrams, receiver relay ground truth, optical port, MongoDB dataset"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -17,6 +17,9 @@ dependencies = [
     "pymongo>=4.6",
     "dnspython>=2.4",
     "python-dotenv>=1.0",
+    "pyserial>=3.5",
+    "rich>=13",
+    "textual>=0.80",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,46 @@
+[Unit]
+Description=FRE research platform (Airspy SDR + ESP32 relay monitor + IR probe -> buffer -> MongoDB, daily backups)
+Documentation=file://@REPO_DIR@/README.md
+Wants=network-online.target time-sync.target
+After=network-online.target time-sync.target
+# replaces the two former services; never run them at the same time (same hardware)
+Conflicts=fre-collector.service fre-relay-logger.service
+# never give up restarting
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+# plugdev: Airspy HF+ (USB), dialout: ESP32 + IR head (serial)
+SupplementaryGroups=plugdev dialout
+WorkingDirectory=@REPO_DIR@
+# Secrets and settings live outside the repository (root-owned, mode 0640).
+EnvironmentFile=/etc/fre-platform/fre.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@REPO_DIR@/.venv/bin/python -m fre_platform serve
+Restart=always
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=90
+StateDirectory=fre-platform
+StateDirectoryMode=0750
+LogsDirectory=fre-platform
+LogsDirectoryMode=0750
+
+# Hardening (USB/serial access to the receivers is required, so no PrivateDevices)
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+# the relay ground-truth files stay where they always were (~/FRE-Relay-Data)
+ReadWritePaths=@RELAY_DATA_DIR@
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
