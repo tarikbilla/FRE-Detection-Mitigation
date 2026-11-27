@@ -7,7 +7,7 @@ The time byte layout was reverse-engineered from the public BlinkenCity (38C3
 2024) examples; minute/hour/day/weekday/month/year are confirmed against those
 examples, the seconds field is provisional (marked ``seconds_provisional``).
 Command telegrams (Versacom / Semagyr) are only classified at the header level
-(control byte, EVU address, broad protocol guess) — the platform observes and
+(control byte, EVU address) — the platform observes and
 records them, it does not act on, craft or transmit any telegram.
 """
 from __future__ import annotations
@@ -39,7 +39,9 @@ class DecodedTime:
 @dataclass
 class Telegram:
     kind: str                     # "time" | "command" | "unknown"
-    protocol: str                 # "din19244-time" | "versacom?" | "semagyr?" | "unknown"
+    # Always "": Versacom vs Semagyr-TOP (and the 19-byte 20xx data fragments) cannot be told
+    # apart from the frame header, so no protocol label is stored (decision 27 Nov 2026).
+    protocol: str
     control: int
     evu_address: int
     checksum_ok: bool
@@ -98,19 +100,17 @@ def decode_time_payload(payload: bytes) -> DecodedTime | None:
 def classify(frame: Frame) -> Telegram:
     addr = frame.address
     payload = frame.payload
-    tg = Telegram(kind="unknown", protocol="unknown", control=frame.control, evu_address=addr,
+    tg = Telegram(kind="unknown", protocol="", control=frame.control, evu_address=addr,
                   checksum_ok=frame.checksum_ok, length=frame.length, raw_hex=frame.hex(),
                   payload_hex=payload.hex())
     if addr == BROADCAST_ADDR and len(payload) >= 7:
         t = decode_time_payload(payload)
         if t is not None:
-            tg.kind, tg.protocol, tg.time = "time", "din19244-time", t
+            tg.kind, tg.time = "time", t
             return tg
         tg.notes.append("broadcast address but time payload did not validate")
     if addr not in (BROADCAST_ADDR, -1):
         tg.kind = "command"
-        # Heuristic protocol hint from control-byte low nibble (Versacom vs Semagyr-TOP)
-        tg.protocol = "versacom?" if (frame.control & 0x0F) in (0x7,) else "semagyr?"
         tg.notes.append("command telegram observed (header only; not decoded or acted upon)")
     return tg
 
@@ -131,7 +131,7 @@ def format_presentation(tg: Telegram) -> str:
     user = raw[4:4 + tg.length]
     payload = user[3:]
     lines = [
-        f"Telegram  [{tg.kind}/{tg.protocol}]  checksum={'OK' if tg.checksum_ok else 'FAIL'}",
+        f"Telegram  [{tg.kind}]  checksum={'OK' if tg.checksum_ok else 'FAIL'}",
         f"  raw     : {grouped_hex(raw)}",
         f"  frame   : 68 | len {tg.length:02x} {tg.length:02x} | 68 | "
         f"C={tg.control:02x} | EVU={tg.evu_address:04x} | PD={grouped_hex(payload)} | "

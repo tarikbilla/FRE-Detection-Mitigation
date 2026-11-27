@@ -338,7 +338,7 @@ Indexed by `dataset_version+channel+ts`, `signal_state+ts`.
 flatness, power), `quality` (clipping, DC, NTP, gaps).
 
 ### `telegrams` — decoded received signals + authenticity ⭐
-`channel`, `kind` (`time`/`command`/`unknown`), `protocol`, `control`,
+`channel`, `kind` (`time`/`command`/`unknown`), `protocol` (always `""` — not determinable from the header), `control`,
 `evu_address`, `checksum_ok`, `length`, `raw_hex`, `payload_hex`,
 `time` (decoded date/time for broadcasts), and **`integrity`**:
 

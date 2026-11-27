@@ -41,7 +41,7 @@ def test_time_telegram_decode(hexstr, expect):
     tgs = decode_bytes(_b(hexstr))
     assert len(tgs) == 1
     t = tgs[0]
-    assert t.kind == "time" and t.protocol == "din19244-time" and t.evu_address == 0x0000
+    assert t.kind == "time" and t.protocol == "" and t.evu_address == 0x0000
     y, mo, d, h, mi, wd = expect
     assert (t.time.year, t.time.month, t.time.day) == (y, mo, d)
     assert (t.time.hour, t.time.minute, t.time.weekday) == (h, mi, wd)
