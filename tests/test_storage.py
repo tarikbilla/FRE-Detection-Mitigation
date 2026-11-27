@@ -15,7 +15,7 @@ def mdoc(i):
 
 def test_ensure_schema_creates_collections_and_indexes(mongomock_store):
     report = mongomock_store.ensure_schema()
-    assert set(COLLECTIONS) == {"sessions", "observations", "spectra", "telegrams", "relay_events", "ir_readouts"}
+    assert set(COLLECTIONS) == {"sessions", "observations", "spectra", "telegrams", "relay_events"}
     assert set(COLLECTIONS) <= set(mongomock_store.db.list_collection_names())
     idx = mongomock_store.db.observations.index_information()
     assert "dataset_channel_ts" in idx and "signal_state_ts" in idx

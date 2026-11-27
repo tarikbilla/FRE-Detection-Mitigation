@@ -140,7 +140,7 @@ def test_ir_probe_stores_every_probe(icfg, tmp_path):
 def test_new_collections_have_schema_and_accept_docs(mongomock_store, icfg):
     mongomock_store.ensure_schema()
     names = set(mongomock_store.db.list_collection_names())
-    assert {"relay_events", "ir_readouts"} <= names
+    assert "relay_events" in names and "ir_readouts" not in names   # ir_readouts dropped 27 Nov 2026
     rec = {"ts_utc": "2026-11-20T10:00:00.000+00:00", "host": "pi", "schema_version": 1, "type": "state",
            "esp_ms": 1, "K1": "a", "K2": "a", "K3": "a", "K4": "a", "raw": "STATE,1,K1=a,K2=a,K3=a,K4=a"}
     doc = relay_doc(rec, icfg)

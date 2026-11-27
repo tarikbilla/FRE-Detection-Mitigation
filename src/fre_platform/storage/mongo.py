@@ -63,11 +63,6 @@ VALIDATORS: dict[str, dict] = {
         "properties": {**_COMMON_PROPS, "type": _STR, "relay": {"bsonType": ["string", "null"]},
                        "position": {"enum": ["a", "b", None]}, "esp_ms": {"bsonType": ["int", "long", "null"]},
                        "host": _STR, "raw": {"bsonType": ["string", "null"]}}}},
-    # Read-only IEC 62056-21 probes of the FRE's optical (IR) port.
-    "ir_readouts": {"$jsonSchema": {
-        "bsonType": "object", "required": _COMMON_REQ + ["responded"],
-        "properties": {**_COMMON_PROPS, "responded": _BOOL, "echo": {"bsonType": ["bool", "null"]},
-                       "ident": {"bsonType": ["object", "null"]}, "readout": {"bsonType": ["object", "null"]}}}},
 }
 
 INDEXES: dict[str, list[IndexModel]] = {
@@ -94,15 +89,12 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("type", ASCENDING), ("ts", DESCENDING)], name="type_ts"),
         IndexModel([("relay", ASCENDING), ("ts", DESCENDING)], name="relay_ts"),
     ],
-    "ir_readouts": [
-        IndexModel([("station_id", ASCENDING), ("ts", ASCENDING)], name="station_ts"),
-        IndexModel([("responded", ASCENDING), ("ts", DESCENDING)], name="responded_ts"),
-    ],
 }
 COLLECTIONS = tuple(INDEXES)
 
 # Read-only view: ONE time-ordered stream of what was broadcast (SDR telegrams), what
-# the receiver did (relay events, heartbeats excluded) and the optical-port probes.
+# the receiver did (relay events, heartbeats excluded). The IR optical-port probes
+# (ir_readouts) were dropped on 27 Nov 2026 - the port never answered.
 # No storage cost. Query:  db.timeline.find({ts: {$gte: ISODate("2026-11-24")}}).sort({ts: 1})
 # (ids are timestamp-first, so .sort({_id: 1}) is chronological as well).
 TIMELINE_VIEW = "timeline"
@@ -114,10 +106,6 @@ TIMELINE_PIPELINE = [
         {"$match": {"type": {"$nin": ["state", "other"]}}},
         {"$project": {"_id": 1, "ts": 1, "station_id": 1, "dataset_version": 1, "source": {"$literal": "relay"},
                       "event": "$type", "relay": 1, "position": 1, "level_pct": 1, "esp_ms": 1, "detail": 1}}]}},
-    {"$unionWith": {"coll": "ir_readouts", "pipeline": [
-        {"$project": {"_id": 1, "ts": 1, "station_id": 1, "dataset_version": 1, "source": {"$literal": "ir"},
-                      "event": {"$cond": ["$responded", "ir_answer", "ir_no_answer"]}, "echo": 1,
-                      "ident": "$ident.line"}}]}},
 ]
 
 # Server error codes that will never succeed on retry -> dead-letter the document.
