@@ -3,7 +3,7 @@
 A receive-only research platform for long-wave radio ripple control
 (Funkrundsteuerung / EFR / FRE). **One application** on a Raspberry Pi records every
 data source of the testbed and builds one versioned **research dataset** in
-**MongoDB Atlas** (database **`fre_dataset_v2`**):
+**MongoDB Atlas** (database **`fre_dataset_v3`**):
 
 | Source | Hardware | What it records | Collection |
 |---|---|---|---|
@@ -33,7 +33,7 @@ FRE K1..K4 ─► ESP32-S3 (fw v2) ─► USB serial ─► relay monitor ──
                                                  └─► ~/FRE-Relay-Data/relays_YYYY-MM-DD.{jsonl,csv}
 FRE optical port ─► IR head ─► IEC 62056-21 probe (every 5 min) ────────► ir_readouts
 
-        all ─► SQLite buffer (survives outages) ─► uploader ─► MongoDB Atlas (fre_dataset_v2)
+        all ─► SQLite buffer (survives outages) ─► uploader ─► MongoDB Atlas (fre_dataset_v3)
                                        daily 03:30 ─► /var/lib/fre-platform/backups/<day>/
 ```
 
@@ -197,7 +197,7 @@ Pi is NTP-synced and runs in UTC) and is saved **three times, always ordered by 
 
 | Where | Layout | Purpose |
 |---|---|---|
-| **MongoDB** `fre_dataset_v2` | `_id` = `<UTC ts>|<station>|<source>|…`, e.g. `2026-11-23T15:24:27.412Z|kali-raspberrypi|DCF49|0` | the `_id` index *is* a time index: `find().sort({_id:1})` is chronological in every collection; ids stay deterministic (no duplicates on re-upload) |
+| **MongoDB** `fre_dataset_v3` | `_id` = `<UTC ts>|<station>|<source>|…`, e.g. `2026-11-23T15:24:27.412Z|kali-raspberrypi|DCF49|0` | the `_id` index *is* a time index: `find().sort({_id:1})` is chronological in every collection; ids stay deterministic (no duplicates on re-upload) |
 | MongoDB view **`timeline`** | telegrams + relay events + IR probes in one stream | `db.timeline.find({ts:{$gte:ISODate("2026-11-24")}}).sort({ts:1})` — broadcast vs. receiver reaction, no extra storage |
 | **Local archive** `/var/lib/fre-platform/archive/YYYY/MM/DD/<collection>.jsonl` | filed by the record's `ts` (not by write time); finished days gzip-compressed; kept forever (`FRE_ARCHIVE_KEEP_DAYS`) | complete local copy, independent of network / Atlas / quota; replay with `mongoimport` or pandas |
 | **Backups** `/var/lib/fre-platform/backups/<YYYY-MM-DDTHHMMSSZ>/` | folder = UTC start time | daily 03:30 + any manual backup, nothing is overwritten |
@@ -235,7 +235,7 @@ time is itself research evidence. Plug the head in on the Pi; it is found as
 
 ## Daily backups
 
-At `FRE_BACKUP_TIME` (03:30 local) every collection of `fre_dataset_v2` (the only
+At `FRE_BACKUP_TIME` (03:30 local) every collection of `fre_dataset_v3` (the only
 database the application uses) is written to
 `/var/lib/fre-platform/backups/<YYYY-MM-DDTHHMMSSZ>/<db>/<collection>.jsonl.gz` (MongoDB
 Extended JSON, one document per line) with a `manifest.json` (counts, SHA-256,
@@ -244,8 +244,8 @@ redacted settings). Unchanged collections are hard-linked to the previous day
 backup (Pi off) runs at the next start. Restore a collection:
 
 ```bash
-zcat /var/lib/fre-platform/backups/2026-11-24T033000Z/fre_dataset_v2/telegrams.jsonl.gz \
-  | mongoimport --uri "$URI" -d fre_dataset_v2 -c telegrams
+zcat /var/lib/fre-platform/backups/2026-11-24T033000Z/fre_dataset_v3/telegrams.jsonl.gz \
+  | mongoimport --uri "$URI" -d fre_dataset_v3 -c telegrams
 ```
 
 ---
@@ -259,7 +259,7 @@ template.
 
 ### MongoDB Atlas
 
-Create a database user with **readWrite on `fre_dataset_v2` only** (the application never uses another database), allow the Pi's IP
+Create a database user with **readWrite on `fre_dataset_v3` only** (the application never uses another database), allow the Pi's IP
 in Atlas *Network Access*, then set either a full URI **or** the three parts:
 
 ```ini
@@ -268,13 +268,13 @@ FRE_MONGODB_URI=mongodb+srv://<user>:<password>@<cluster-host>/?retryWrites=true
 FRE_MONGODB_USERNAME=<user>
 FRE_MONGODB_PASSWORD=<password>
 FRE_MONGODB_HOST=cluster0.xxxxx.mongodb.net
-FRE_MONGODB_DB=fre_dataset_v2
+FRE_MONGODB_DB=fre_dataset_v3
 ```
 
 `fre-platform db-check` must print `"ok": true`. If the URI is unset, the collector
 keeps running and buffers locally until it is configured.
 
-**Free tier (M0, 512 MB per cluster).** Space used by other databases on the cluster (the frozen `fre_dataset`, ~99 MB) is set as `FRE_ATLAS_RESERVED_MB` and counted by the guard without connecting to them. Defaults target ~10 MB/day. Above
+**Free tier (M0, 512 MB per cluster).** Space used by other databases on the cluster (the frozen `fre_dataset` ~99 MB and `fre_dataset_v2` ~97 MB) is set as `FRE_ATLAS_RESERVED_MB` and counted by the guard without connecting to them. Defaults target ~10 MB/day. Above
 `FRE_ATLAS_SOFT_LIMIT_PCT` (85 %) of `FRE_ATLAS_QUOTA_MB` the uploader keeps bulk
 data (spectra/observations) local and uploads only telegrams and metadata.
 
@@ -283,8 +283,8 @@ data (spectra/observations) local and uploads only telegrams and metadata.
 | Variable | Default | Meaning |
 |---|---|---|
 | `FRE_MONGODB_URI` / `_USERNAME`+`_PASSWORD`+`_HOST` | – | Atlas credentials (secret) |
-| `FRE_MONGODB_DB` | `fre_dataset_v2` | the ONLY database the application connects to; `fre_dataset` is refused |
-| `FRE_ATLAS_RESERVED_MB` | `0` (deployed: `99`) | MB of other databases on the cluster, for the quota guard |
+| `FRE_MONGODB_DB` | `fre_dataset_v3` | the ONLY database the application connects to; `fre_dataset` and `fre_dataset_v2` are refused |
+| `FRE_ATLAS_RESERVED_MB` | `0` (deployed: `197`) | MB of other databases on the cluster, for the quota guard |
 | `FRE_SOURCE` | `airspyhf` | `airspyhf`, `simulated` or `replay` |
 | `FRE_RECEIVER_MODEL` | `Airspy HF+ Discovery` | recorded in session metadata |
 | `FRE_CENTER_FREQ_HZ` / `FRE_SAMPLE_RATE_HZ` | `108000` / `192000` | tuning / sample rate |
@@ -304,18 +304,18 @@ data (spectra/observations) local and uploads only telegrams and metadata.
 | `FRE_RELAY_STATE_UPLOAD_S` | `3600` | upload one relay heartbeat per hour |
 | `FRE_IR_ENABLED` / `FRE_IR_PORT` / `FRE_IR_PROBE_INTERVAL_S` | `true` / `auto` / `300` | IR probe |
 | `FRE_BACKUP_ENABLED` / `FRE_BACKUP_TIME` / `FRE_BACKUP_KEEP_DAYS` | `true` / `03:30` / `14` | daily backup |
-| `FRE_BACKUP_DIR` | `<data_dir>/backups` | where (only `fre_dataset_v2` is backed up) |
+| `FRE_BACKUP_DIR` | `<data_dir>/backups` | where (only `fre_dataset_v3` is backed up) |
 | `FRE_RELAY_EXPERIMENT_ID` / `FRE_IR_EXPERIMENT_ID` | `relay-switching-001` / `ir-optical-001` | experiment ids |
 | `FRE_ARCHIVE_ENABLED` / `FRE_ARCHIVE_DIR` / `FRE_ARCHIVE_KEEP_DAYS` | `true` / `<data_dir>/archive` / `0` (forever) | local time archive |
 | `FRE_LOG_LEVEL` / `FRE_LOG_FORMAT` | `INFO` / `json` | logging |
 
 ---
 
-## 4. Dataset schema (`fre_dataset_v2`)
+## 4. Dataset schema (`fre_dataset_v3`)
 
-`fre_dataset` (until 23 Nov 2026) is a frozen legacy database. The application never connects to it:
-`FRE_MONGODB_DB=fre_dataset` is rejected at start-up, and backups, statistics and the quota
-guard only touch `fre_dataset_v2`.
+`fre_dataset` (until 23 Nov 2026) and `fre_dataset_v2` (23–27 Nov 2026) are frozen legacy databases. The application never connects to it:
+`FRE_MONGODB_DB=fre_dataset` or `fre_dataset_v2` is rejected at start-up, and backups, statistics and the quota
+guard only touch `fre_dataset_v3`.
 
 Four collections, created automatically with JSON-schema validators and indexes.
 Every time-series document carries `schema_version`, `dataset_version`,

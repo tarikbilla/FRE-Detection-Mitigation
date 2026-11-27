@@ -5,7 +5,7 @@
     │  reception, Pi health,       │  K1..K4 relays, events,      │
     │  network                     │  optical (IR) port           │
     ├──────────────────────────────┼──────────────────────────────┤
-    │ 3 · MONGODB fre_dataset_v2   │ 4 · BACKUPS & CONFIG         │
+    │ 3 · MONGODB fre_dataset_v3   │ 4 · BACKUPS & CONFIG         │
     └──────────────────────────────┴──────────────────────────────┘
 
 The panels are used by the Textual app (``tui.py``) and by the classic

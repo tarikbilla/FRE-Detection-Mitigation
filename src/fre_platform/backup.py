@@ -6,13 +6,13 @@ manual backups add more)::
 
     <backup_dir>/2026-11-24T033000Z/
         manifest.json                     counts, bytes, sha256, timings, redacted config
-        fre_dataset_v2/telegrams.jsonl.gz MongoDB Extended JSON (relaxed), one doc per line
+        fre_dataset_v3/telegrams.jsonl.gz MongoDB Extended JSON (relaxed), one doc per line
 
-Only the application's own database (FRE_MONGODB_DB = fre_dataset_v2) is backed up.
+Only the application's own database (FRE_MONGODB_DB = fre_dataset_v3) is backed up.
 
 Restore one collection::
 
-    zcat telegrams.jsonl.gz | mongoimport --uri "$URI" -d fre_dataset_v2 -c telegrams
+    zcat telegrams.jsonl.gz | mongoimport --uri "$URI" -d fre_dataset_v3 -c telegrams
 
 A collection whose (document count, data size) is unchanged since the previous
 backup is hard-linked instead of downloaded again (no Atlas bandwidth, no disk). Backups older than

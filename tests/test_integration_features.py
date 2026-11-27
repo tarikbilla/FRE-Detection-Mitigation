@@ -18,7 +18,7 @@ from fre_platform.storage.buffer import LocalBuffer
 def icfg(cfg, tmp_path):
     return dataclasses.replace(cfg, relay_data_dir=tmp_path / "relay", relay_port="/dev/fake-esp",
                                ir_port="/dev/fake-ir", backup_dir=tmp_path / "backups",
-                               mongodb_db="fre_dataset_v2", backup_min_free_mb=0)
+                               mongodb_db="fre_dataset_v3", backup_min_free_mb=0)
 
 
 # ------------------------------------------------------------------ relay
@@ -150,9 +150,9 @@ def test_new_collections_have_schema_and_accept_docs(mongomock_store, icfg):
 
 # ----------------------------------------------------------------- backup
 def _fill(client):
-    client["fre_dataset_v2"]["telegrams"].insert_many([{"_id": f"t{i}", "ts": datetime.now(timezone.utc),
+    client["fre_dataset_v3"]["telegrams"].insert_many([{"_id": f"t{i}", "ts": datetime.now(timezone.utc),
                                                         "n": i} for i in range(25)])
-    client["fre_dataset_v2"]["relay_events"].insert_one({"_id": "r1", "type": "event"})
+    client["fre_dataset_v3"]["relay_events"].insert_one({"_id": "r1", "type": "event"})
     client["fre_dataset"]["telegrams"].insert_many([{"_id": f"old{i}"} for i in range(3)])
 
 
@@ -168,14 +168,14 @@ def test_backup_dumps_all_databases_and_prunes(icfg):
     when = datetime(2026, 11, 24, 2, 30, 0, tzinfo=timezone.utc)
     m = run_backup(cfg, client=client, day="2026-11-24", now=when)
     # only the application's own database is backed up - the legacy fre_dataset is never touched
-    assert m["ok"] and m["documents"] == 26 and set(m["databases"]) == {"fre_dataset_v2"}
+    assert m["ok"] and m["documents"] == 26 and set(m["databases"]) == {"fre_dataset_v3"}
     assert m["name"] == "2026-11-24T023000Z" and m["trigger"] == "manual"
     assert "2026-11-01" in m["removed_old"] and not old.exists()
-    f = cfg.backup_path / "2026-11-24T023000Z" / "fre_dataset_v2" / "telegrams.jsonl.gz"
+    f = cfg.backup_path / "2026-11-24T023000Z" / "fre_dataset_v3" / "telegrams.jsonl.gz"
     lines = gzip.open(f, "rt").read().splitlines()
     assert len(lines) == 25 and json.loads(lines[0])["_id"] == "t0"
     assert "$date" in lines[0]  # extended JSON keeps BSON types for mongoimport
-    assert m["databases"]["fre_dataset_v2"]["telegrams"]["sha256"]
+    assert m["databases"]["fre_dataset_v3"]["telegrams"]["sha256"]
     listed = list_backups(cfg)
     assert listed[0]["day"] == "2026-11-24" and listed[0]["name"] == "2026-11-24T023000Z" and listed[0]["ok"]
     # a second (manual) backup the same day gets its own timestamped folder - nothing is overwritten
@@ -204,27 +204,29 @@ def test_stats_publisher_counts_all_databases(icfg):
     from fre_platform.storage.mongo import MongoStore
     client = mongomock.MongoClient(tz_aware=True)
     _fill(client)
-    pub = StatsPublisher(icfg, lambda: MongoStore(client=client, db_name="fre_dataset_v2"))
+    pub = StatsPublisher(icfg, lambda: MongoStore(client=client, db_name="fre_dataset_v3"))
     s = pub.sample()
-    assert s["ok"] and s["active_db"] == "fre_dataset_v2"
-    assert s["databases"]["fre_dataset_v2"]["collections"] == {"relay_events": 1, "telegrams": 25}
-    assert set(s["databases"]) == {"fre_dataset_v2"}   # other databases are never read
+    assert s["ok"] and s["active_db"] == "fre_dataset_v3"
+    assert s["databases"]["fre_dataset_v3"]["collections"] == {"relay_events": 1, "telegrams": 25}
+    assert set(s["databases"]) == {"fre_dataset_v3"}   # other databases are never read
 
 
 def test_new_settings_from_env(tmp_path):
-    c = Settings.from_env(env={"FRE_SOURCE": "simulated", "FRE_MONGODB_DB": "fre_dataset_v2",
+    c = Settings.from_env(env={"FRE_SOURCE": "simulated", "FRE_MONGODB_DB": "fre_dataset_v3",
                                "FRE_RELAY_DATA_DIR": str(tmp_path / "r"), "FRE_BACKUP_TIME": "02:15",
                                "FRE_IR_ENABLED": "false", "FRE_DATA_DIR": str(tmp_path)})
     assert c.relay_data_dir == tmp_path / "r" and c.backup_time == "02:15" and not c.ir_enabled
-    assert c.backup_path == tmp_path / "backups" and c.backup_db_list == ["fre_dataset_v2"]
+    assert c.backup_path == tmp_path / "backups" and c.backup_db_list == ["fre_dataset_v3"]
     with pytest.raises(ConfigError):
         Settings.from_env(env={"FRE_SOURCE": "simulated", "FRE_BACKUP_TIME": "25:00"})
 
 
 def test_application_uses_only_the_v2_database():
-    assert Settings.from_env(env={"FRE_SOURCE": "simulated"}).mongodb_db == "fre_dataset_v2"   # default
+    assert Settings.from_env(env={"FRE_SOURCE": "simulated"}).mongodb_db == "fre_dataset_v3"   # default
     with pytest.raises(ConfigError, match="legacy"):
         Settings.from_env(env={"FRE_SOURCE": "simulated", "FRE_MONGODB_DB": "fre_dataset"})
+    with pytest.raises(ConfigError):   # fre_dataset_v2 frozen 27 Nov 2026
+        Settings.from_env(env={"FRE_SOURCE": "simulated", "FRE_MONGODB_DB": "fre_dataset_v2"})
 
 
 def test_quota_guard_counts_reserved_space_without_reading_other_databases():
@@ -232,10 +234,10 @@ def test_quota_guard_counts_reserved_space_without_reading_other_databases():
     from fre_platform.storage.mongo import MongoStore
     client = mongomock.MongoClient(tz_aware=True)
     client["fre_dataset"]["telegrams"].insert_one({"_id": "legacy"})
-    store = MongoStore(client=client, db_name="fre_dataset_v2", reserved_mb=99.0)
+    store = MongoStore(client=client, db_name="fre_dataset_v3", reserved_mb=99.0)
     used = store.storage_used_mb()
     assert used is None or used >= 99.0          # mongomock may not implement dbStats
-    assert store.db.name == "fre_dataset_v2"
+    assert store.db.name == "fre_dataset_v3"
 
 
 # --------------------------------------------------------------- dashboard
@@ -252,14 +254,14 @@ def test_dashboard_renders_all_four_panels(icfg, tmp_path):
     (d / "ir_live.json").write_text(json.dumps({"head_present": False, "probes": 0}))
     (d / "mongo_stats.json").write_text(json.dumps({
         "ok": True, "updated_at": now, "cluster_used_mb": 100, "quota_mb": 512, "latency_ms": 20,
-        "databases": {"fre_dataset_v2": {"collections": {"telegrams": 5}, "documents": 5, "data_mb": 1,
+        "databases": {"fre_dataset_v3": {"collections": {"telegrams": 5}, "documents": 5, "data_mb": 1,
                                          "index_mb": 0.1, "active": True}}}))
     console = Console(record=True, width=220, height=60, color_system=None)
     console.print(dashboard.render(icfg, {}))
     text = console.export_text()
     for title in ("1 · SDR & RASPBERRY PI", "2 · FRE RECEIVER", "3 · MONGODB DATABASE", "4 · BACKUPS & CONFIG"):
         assert title in text
-    assert "K2 · 60 %" in text and "requested feed-in 60 %" in text and "fre_dataset_v2" in text
+    assert "K2 · 60 %" in text and "requested feed-in 60 %" in text and "fre_dataset_v3" in text
     assert "ESP32" in text and "MONGO" in text          # health chips in the header
 
 

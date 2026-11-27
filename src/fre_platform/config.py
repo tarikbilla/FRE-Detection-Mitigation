@@ -18,9 +18,10 @@ AIRSPY_HF_SAMPLE_RATES = (912000, 768000, 650000, 456000, 384000, 228000, 192000
 VALID_SOURCES = ("airspyhf", "simulated", "replay")
 DEFAULT_CHANNELS = "DCF77:77500,DCF49:129100,HGA22:135600,DCF39:139000"
 #: The one database this application connects to (reads and writes).
-DEFAULT_DATABASE = "fre_dataset_v2"
-#: Databases this application must never use (legacy data, frozen 23 Nov 2026).
-LEGACY_DATABASES = ("fre_dataset",)
+DEFAULT_DATABASE = "fre_dataset_v3"
+#: Databases this application must never use (legacy data: fre_dataset frozen 23 Nov 2026,
+#: fre_dataset_v2 frozen 27 Nov 2026).
+LEGACY_DATABASES = ("fre_dataset", "fre_dataset_v2")
 
 _URI_CRED_RE = re.compile(r"(mongodb(?:\+srv)?://)([^:/@\s]+):([^@\s]+)@")
 
@@ -97,7 +98,7 @@ _SPECIAL_PARSERS = {
 class Settings:
     # --- MongoDB (secret URI is excluded from repr) ---
     mongodb_uri: str | None = field(default=None, repr=False)
-    mongodb_db: str = "fre_dataset_v2"   # the ONLY database this application uses
+    mongodb_db: str = "fre_dataset_v3"   # the ONLY database this application uses
     mongodb_app_name: str = "fre-platform"
     mongodb_timeout_ms: int = 8000
 

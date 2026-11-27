@@ -131,7 +131,7 @@ class UploadResult:
 
 
 class MongoStore:
-    def __init__(self, uri: str | None = None, db_name: str = "fre_dataset_v2", app_name: str = "fre-platform",
+    def __init__(self, uri: str | None = None, db_name: str = "fre_dataset_v3", app_name: str = "fre-platform",
                  timeout_ms: int = 8000, client: MongoClient | None = None, reserved_mb: float = 0.0):
         if client is None:
             if not uri:
@@ -263,7 +263,7 @@ class MongoStore:
         """Quota-relevant MB: this database (data + index) + ``reserved_mb``.
 
         The Atlas free-tier quota (M0, 512 MB) is per cluster. Other databases on the
-        cluster (the frozen ``fre_dataset``) are accounted for by the configured
+        cluster (the frozen ``fre_dataset`` and ``fre_dataset_v2``) are accounted for by the configured
         ``FRE_ATLAS_RESERVED_MB`` - this application never connects to them.
         """
         try:
